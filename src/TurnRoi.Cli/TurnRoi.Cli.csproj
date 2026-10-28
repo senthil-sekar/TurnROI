@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>turnroi</AssemblyName>
+    <RootNamespace>TurnRoi.Cli</RootNamespace>
+    <PackageId>TurnROI</PackageId>
+    <Description>Was that agent turn worth its tokens? Per-turn spend, waste findings and ROI for AI coding agent sessions.</Description>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>turnroi</ToolCommandName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TurnRoi.Core\TurnRoi.Core.csproj" />
+  </ItemGroup>
+
+</Project>

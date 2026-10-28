@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>TurnROI.Core</PackageId>
+    <Description>Token spend vs. outcome analysis for AI coding agent sessions.</Description>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Pricing\prices.json" LogicalName="TurnRoi.Core.Pricing.prices.json" />
+    <InternalsVisibleTo Include="TurnRoi.Core.Tests" />
+  </ItemGroup>
+
+</Project>
