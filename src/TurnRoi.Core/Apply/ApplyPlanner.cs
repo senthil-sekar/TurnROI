@@ -222,7 +222,8 @@ public static class HookConfig
         foreach (var (evt, sub) in new[] { ("PreToolUse", "pre-tool-use"), ("PostToolUse", "post-tool-use") })
         {
             var list = Replace(hooks, evt);
-            list.Add(new JsonObject
+            // Typed as JsonNode so the non-generic Add is used (the generic one isn't trim/AOT safe).
+            list.Add((JsonNode)new JsonObject
             {
                 ["matcher"] = "*",
                 ["hooks"] = new JsonArray(new JsonObject { ["type"] = "command", ["command"] = $"{command} hook {sub}", ["timeout"] = 10 }),
@@ -241,7 +242,7 @@ public static class HookConfig
         var hooks = root["hooks"] as JsonObject ?? new JsonObject();
         root["hooks"] = hooks;
         foreach (var (evt, sub) in new[] { ("preToolUse", "pre-tool-use"), ("postToolUse", "post-tool-use") })
-            Replace(hooks, evt).Add(new JsonObject { ["command"] = $"{command} hook {sub} --agent cursor" });
+            Replace(hooks, evt).Add((JsonNode)new JsonObject { ["command"] = $"{command} hook {sub} --agent cursor" });
         return root.ToJsonString(Indented) + "\n";
     }
 
