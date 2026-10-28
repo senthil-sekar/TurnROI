@@ -1,0 +1,9 @@
+{"kind":0,"v":{"version":3,"sessionId":"cop-0001","creationDate":1761580000000,"requests":[]}}
+{"kind":2,"k":["requests"],"v":[{"requestId":"request_a","timestamp":1761580010000,"modelId":"copilot/claude-sonnet-4.5","message":{"text":"Add a unit test for PolicyRenewalService"},"response":[]}]}
+{"kind":2,"k":["requests",0,"response"],"v":[{"kind":"markdownContent","value":{"value":"Reading the service"}},{"kind":"toolInvocationSerialized","toolId":"copilot_readFile","toolCallId":"tc1"},{"kind":"toolInvocationSerialized","toolId":"run_in_terminal","toolCallId":"tc2","toolSpecificData":{"commandLine":{"original":"dotnet test"}}}]}
+{"kind":1,"k":["requests",0,"result"],"v":{"metadata":{"resolvedModel":"claude-sonnet-4.5","toolCallRounds":[{},{}]},"timings":{"totalElapsed":42000}}}
+{"kind":1,"k":["requests",0,"modelTotals"],"v":[{"model":"claude-sonnet-4.5","inputTokens":120000,"cachedTokens":90000,"outputTokens":2500}]}
+{"kind":2,"k":["requests"],"v":[{"requestId":"request_b","timestamp":1761580100000,"modelId":"copilot/gpt-4.1","message":{"text":"No, that's wrong. Use the existing test fixtures"},"response":[],"result":{"metadata":{"promptTokens":30000,"completionTokens":800}}}]}
+{"kind":2,"k":["requests"],"v":[{"requestId":"request_c","timestamp":1761580200000,"message":{"text":"Also update the README"},"response":[]}]}
+{"kind":3,"k":["requests",2,"response"]}
+{not json

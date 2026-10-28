@@ -20,6 +20,7 @@ internal static class JsonReport
             s.Cwd,
             s.GitBranch,
             s.SkippedLines,
+            s.Notes,
             Usage(s.Usage),
             r.TotalCost,
             r.CorrectedSpend,
@@ -48,7 +49,7 @@ internal sealed record TurnDto(int Index, string Prompt, DateTimeOffset? Started
     List<ToolDto> Tools, UsageDto Usage, decimal? Cost);
 internal sealed record FindingDto(string Kind, string Severity, int? Turn, string Message, long? EstimatedTokens);
 internal sealed record ReportDto(int SchemaVersion, string SessionId, string Source, string Path, string? Cwd, string? GitBranch,
-    int SkippedLines, UsageDto Usage, decimal? TotalCost, decimal? CorrectedSpend, IReadOnlyList<string> UnpricedModels,
+    int SkippedLines, IReadOnlyList<string> Notes, UsageDto Usage, decimal? TotalCost, decimal? CorrectedSpend, IReadOnlyList<string> UnpricedModels,
     List<TurnDto> Turns, List<FindingDto> Findings);
 
 [JsonSourceGenerationOptions(WriteIndented = true, PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,

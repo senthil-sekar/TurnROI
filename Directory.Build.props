@@ -7,7 +7,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Authors>Senthil</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <RepositoryUrl>https://github.com/OWNER/TurnROI</RepositoryUrl>
+    <RepositoryUrl>https://github.com/senthil-sekar/TurnROI</RepositoryUrl>
     <Version>0.0.1</Version>
   </PropertyGroup>
 </Project>

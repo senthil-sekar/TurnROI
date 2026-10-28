@@ -33,8 +33,12 @@ public sealed class PriceTable
         Note = note;
     }
 
-    public ModelPrice? Find(string model) =>
-        _byPrefix.FirstOrDefault(p => model.StartsWith(p.Key, StringComparison.OrdinalIgnoreCase)).Value;
+    /// <summary>Longest-prefix match. Dots and hyphens are treated alike ("claude-sonnet-4.5" matches "claude-sonnet-4-5").</summary>
+    public ModelPrice? Find(string model)
+    {
+        var normalized = model.Replace('.', '-');
+        return _byPrefix.FirstOrDefault(p => normalized.StartsWith(p.Key.Replace('.', '-'), StringComparison.OrdinalIgnoreCase)).Value;
+    }
 
     /// <summary>Cost of a set of calls; null if any call's model is unpriced.</summary>
     public decimal? Cost(IEnumerable<LlmCall> calls)
@@ -42,6 +46,7 @@ public sealed class PriceTable
         decimal total = 0;
         foreach (var c in calls)
         {
+            if (c.BilledCost is { } billed) { total += billed; continue; }
             var price = Find(c.Model);
             if (price is null) return null;
             total += price.Cost(c.Usage);
@@ -49,7 +54,8 @@ public sealed class PriceTable
         return total;
     }
 
-    public IEnumerable<string> UnpricedModels(IEnumerable<string> models) => models.Where(m => Find(m) is null).Distinct();
+    public IEnumerable<string> UnpricedModels(IEnumerable<LlmCall> calls) =>
+        calls.Where(c => c.BilledCost is null && Find(c.Model) is null).Select(c => c.Model).Distinct();
 
     public static PriceTable LoadDefault()
     {

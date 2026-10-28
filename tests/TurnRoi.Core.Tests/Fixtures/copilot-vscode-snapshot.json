@@ -1,0 +1,23 @@
+{
+  "version": 3,
+  "sessionId": "cop-snap",
+  "requests": [
+    {
+      "requestId": "r1",
+      "timestamp": 1761500000000,
+      "modelId": "copilot/claude-sonnet-4",
+      "message": {
+        "text": "Explain this regex"
+      },
+      "response": [],
+      "modelTotals": [
+        {
+          "model": "claude-sonnet-4",
+          "inputTokens": 5000,
+          "cachedTokens": 0,
+          "outputTokens": 300
+        }
+      ]
+    }
+  ]
+}

@@ -13,19 +13,28 @@ internal sealed class CliArgs
     public int Limit { get; private set; } = 20;
     public string? Error { get; private set; }
 
+    /// <summary>Null means "auto": detect from the file, or Claude Code for "latest"/ids.</summary>
+    public Core.Adapters.AgentSource? Source { get; private set; }
+
     public const string Help = """
         turnroi — was that agent turn worth its tokens?
 
         Usage:
-          turnroi sessions [--root <dir>] [--limit <n>]
-          turnroi analyze [latest | <session-id> | <path.jsonl>] [options]
+          turnroi sessions [--source claude|copilot] [--root <dir>] [--limit <n>]
+          turnroi analyze [latest | <session-id> | <file>] [--source claude|copilot|cursor] [options]
+
+        Sources:
+          claude    Claude Code transcripts (~/.claude/projects)                 default
+          copilot   GitHub Copilot Chat in VS Code (workspaceStorage/*/chatSessions)
+          cursor    Cursor usage CSV exported from the Cursor dashboard (pass the file path)
+          A file path is auto-detected; --source is only needed for "latest" or a session id.
 
         Options for analyze:
           --json            Machine-readable report
           --top <n>         Show the n most expensive turns (default 15)
           --all             Show every turn in order
           --prices <file>   Override the built-in price table (JSON)
-          --root <dir>      Transcript root (default ~/.claude/projects or $CLAUDE_CONFIG_DIR/projects)
+          --root <dir>      Override where sessions are searched for
 
         Other:
           --help, --version
@@ -57,6 +66,12 @@ internal sealed class CliArgs
                 case "--all": a.AllTurns = true; break;
                 case "--help" or "-h": a.Command = "help"; return a;
                 case "--root": a.Root = Value(ref i); break;
+                case "--source":
+                    var src = Value(ref i);
+                    if (src is null) break;
+                    if (Enum.TryParse<Core.Adapters.AgentSource>(src, ignoreCase: true, out var parsed)) a.Source = parsed;
+                    else a.Error = $"unknown source '{src}' (expected claude, copilot or cursor)";
+                    break;
                 case "--prices": a.PricesFile = Value(ref i); break;
                 case "--top": a.Top = Int(ref i); break;
                 case "--limit": a.Limit = Int(ref i); break;

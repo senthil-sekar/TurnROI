@@ -22,8 +22,14 @@ public readonly record struct TokenUsage(long Input, long Output, long CacheWrit
             Math.Max(a.CacheWrite, b.CacheWrite), Math.Max(a.CacheRead, b.CacheRead));
 }
 
-/// <summary>One request/response round trip to the model.</summary>
-public sealed record LlmCall(string MessageId, string Model, DateTimeOffset? Timestamp, TokenUsage Usage, bool IsSidechain);
+/// <summary>
+/// One request/response round trip to the model, or for sources that only report per-turn totals
+/// (e.g. Copilot), the aggregate of one model's calls within a turn.
+/// </summary>
+/// <param name="BilledCost">Cost as billed by the vendor, when the source records it (e.g. Cursor usage export).
+/// Takes precedence over the price table.</param>
+public sealed record LlmCall(string MessageId, string Model, DateTimeOffset? Timestamp, TokenUsage Usage, bool IsSidechain,
+    decimal? BilledCost = null);
 
 /// <summary>A tool invocation made by the agent, joined with its result when available.</summary>
 public sealed class ToolCall
@@ -67,6 +73,12 @@ public sealed class AgentSession
 
     /// <summary>Lines the adapter could not parse. Surfaced so schema drift is visible, not silent.</summary>
     public int SkippedLines { get; set; }
+
+    /// <summary>False when the source has no human prompts (e.g. Cursor's usage export), so pushback can't be detected.</summary>
+    public bool HasPrompts { get; set; } = true;
+
+    /// <summary>Source-specific caveats the report should show (e.g. "costs are API-equivalent").</summary>
+    public List<string> Notes { get; } = new();
 
     public TokenUsage Usage => Turns.Aggregate(TokenUsage.Zero, (acc, t) => acc + t.Usage);
 }

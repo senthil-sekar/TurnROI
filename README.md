@@ -4,7 +4,19 @@
 
 Coding agents routinely spend 100k–200k+ tokens per turn. Existing tools either compress context or report totals. TurnROI asks a different question: *which turns paid off, which didn't, and why?*
 
-> Status: **Phase 0 spike.** Claude Code transcripts only. Expect breaking changes.
+> Status: **Phase 0 spike.** Expect breaking changes.
+
+## Supported agents
+
+| Agent | Data TurnROI reads | Per-turn prompts | Tokens | Cost | Tool calls |
+|---|---|---|---|---|---|
+| **Claude Code** | Local transcripts, `~/.claude/projects/**/*.jsonl` | Yes | Per model call, incl. cache read/write | Price table | Yes, with output size |
+| **GitHub Copilot (VS Code)** | Local chat sessions, `<VS Code User>/workspaceStorage/*/chatSessions/*.jsonl` (and legacy `.json`) | Yes | Per turn, per model; cached split out | Price table (API-equivalent; Copilot bills premium requests) | Names and terminal commands; no output size |
+| **Cursor** | Usage CSV exported from the Cursor dashboard | No: turns are approximated as bursts of requests | Per request, incl. cache read/write | **As billed** ("Included" rows = $0) | No |
+
+Why Cursor uses the CSV: Cursor stores chats locally in SQLite (`state.vscdb`), but recent builds write zero for per-message token counts, so the dashboard export is the only reliable source of tokens and billed cost. Combining it with local prompts is on the roadmap.
+
+All three formats are internal to their vendors and undocumented; TurnROI parses them tolerantly and reports unparseable lines rather than failing.
 
 ## What it does today
 
@@ -48,17 +60,27 @@ Every finding is a heuristic with its evidence attached, not a verdict.
 Requires the .NET 8 SDK or later.
 
 ```bash
-git clone https://github.com/OWNER/TurnROI.git
+git clone https://github.com/senthil-sekar/TurnROI.git
 cd TurnROI
-dotnet run --project src/TurnRoi.Cli -- sessions            # recent Claude Code sessions
-dotnet run --project src/TurnRoi.Cli -- analyze latest      # most recent session
-dotnet run --project src/TurnRoi.Cli -- analyze <id|path> --all
-dotnet run --project src/TurnRoi.Cli -- analyze latest --json > report.json
+alias turnroi="dotnet run --project src/TurnRoi.Cli --"
+
+# Claude Code
+turnroi sessions                          # recent sessions
+turnroi analyze latest                    # most recent session
+turnroi analyze <id|path> --all           # every turn in order
+
+# GitHub Copilot in VS Code (stable, Insiders and VSCodium are searched)
+turnroi sessions --source copilot
+turnroi analyze latest --source copilot
+
+# Cursor: export usage as CSV from the Cursor dashboard, then
+turnroi analyze ~/Downloads/usage-events.csv
+
+# Any source, machine-readable
+turnroi analyze latest --json > report.json
 ```
 
-As a global tool (once published): `dotnet tool install -g TurnROI`, then `turnroi analyze latest`.
-
-Transcripts are read from `~/.claude/projects` (or `$CLAUDE_CONFIG_DIR/projects`). Override with `--root`.
+A file path is auto-detected; `--source` is only needed for `latest` or a session id. Override search folders with `--root`. As a global tool (once published): `dotnet tool install -g TurnROI`.
 
 ## Pricing
 
@@ -73,11 +95,11 @@ Local-only. TurnROI reads transcripts on your machine and sends nothing anywhere
 ```
 src/TurnRoi.Core
   Model/        Normalized session → turn → LLM call / tool call
-  Adapters/     IAgentSourceAdapter; ClaudeCodeJsonlAdapter (tolerant of schema drift)
+  Adapters/     IAgentSourceAdapter + Claude Code, Copilot (VS Code), Cursor (usage CSV); SessionSources discovery
   Pricing/      Prefix-matched price table, unpriced rather than guessed
   Analysis/     SessionAnalyzer → per-turn cost + findings
 src/TurnRoi.Cli   Zero-dependency CLI (console table and versioned JSON)
-tests/            xUnit tests against a synthetic fixture
+tests/            xUnit tests against synthetic fixtures (one per source)
 ```
 
 Principles: provider-reported usage is the source of truth; estimates are labelled; parsing failures are counted and shown, never silently dropped; no runtime dependencies.
@@ -88,7 +110,7 @@ Principles: provider-reported usage is the source of truth; estimates are labell
 2. **ROI:** join turns to outcomes: did the diff survive to commit, did tests pass, was it reverted.
 3. **Fast loop:** Claude Code hooks for in-session guardrails (output caps, re-read blocking, budget circuit breaker).
 4. **Slow loop:** per-repo waste profile → proposed config changes you approve.
-5. **More agents:** Codex, OpenCode, OpenTelemetry GenAI exports.
+5. **More agents:** Copilot CLI, Codex, OpenCode, OpenTelemetry GenAI exports; Cursor prompts from local `state.vscdb` joined to the usage CSV.
 
 Every intervention will be benchmarked for cost *at equal task success*: removing waste, not moving it.
 

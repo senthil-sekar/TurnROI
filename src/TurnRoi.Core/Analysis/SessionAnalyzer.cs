@@ -37,7 +37,7 @@ public sealed record SessionReport(
 {
     /// <summary>Cost of turns the human immediately corrected or interrupted. A first, rough proxy for "not worth it".</summary>
     public decimal? CorrectedSpend =>
-        TotalCost is null ? null : Turns.Where(t => t.WasCorrected).Sum(t => t.Cost ?? 0);
+        TotalCost is null || !Session.HasPrompts ? null : Turns.Where(t => t.WasCorrected).Sum(t => t.Cost ?? 0);
 }
 
 public sealed class AnalyzerOptions
@@ -94,7 +94,7 @@ public sealed class SessionAnalyzer
             .ToList();
 
         var allCalls = session.Turns.SelectMany(t => t.Calls).ToList();
-        var unpriced = _prices.UnpricedModels(allCalls.Select(c => c.Model)).ToList();
+        var unpriced = _prices.UnpricedModels(allCalls).ToList();
         var total = _prices.Cost(allCalls);
 
         sessionFindings.AddRange(turnReports.SelectMany(t => t.Findings));
@@ -163,6 +163,7 @@ public sealed class SessionAnalyzer
 
     private static void FindCorrections(AgentSession session, Dictionary<int, List<Finding>> perTurn)
     {
+        if (!session.HasPrompts) return;
         for (var i = 0; i < session.Turns.Count - 1; i++)
         {
             var next = session.Turns[i + 1];

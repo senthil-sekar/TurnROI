@@ -36,27 +36,53 @@ static int Run(string[] args)
 
 static int ListSessions(CliArgs opts)
 {
-    var sessions = ClaudeCodeSessionLocator.FindSessions(opts.Root, opts.Limit);
-    if (sessions.Count == 0)
+    var source = opts.Source ?? AgentSource.Claude;
+    if (source == AgentSource.Cursor)
     {
-        Console.Error.WriteLine($"No Claude Code sessions found under {opts.Root ?? ClaudeCodeSessionLocator.DefaultRoot}");
+        Console.Error.WriteLine("Cursor has no local session list. Export your usage CSV from the Cursor dashboard,");
+        Console.Error.WriteLine("then run: turnroi analyze <usage.csv>");
         return 1;
     }
 
-    var table = new TextTable("Modified", "Session", "Project", "Size");
+    var sessions = SessionSources.FindSessions(source, opts.Root, opts.Limit);
+    if (sessions.Count == 0)
+    {
+        var where = opts.Root ?? string.Join(", ", SessionSources.DefaultRoots(source).DefaultIfEmpty("(no default folder found)"));
+        Console.Error.WriteLine($"No {source} sessions found under {where}");
+        return 1;
+    }
+
+    var table = new TextTable("Modified", "Session", "Folder", "Size").AlignRight(3);
     foreach (var f in sessions)
         table.Add(f.LastWriteTime.ToString("yyyy-MM-dd HH:mm"), Path.GetFileNameWithoutExtension(f.Name),
-            f.Directory?.Name ?? "", $"{f.Length / 1024.0:N0} KB");
+            ProjectLabel(source, f), $"{f.Length / 1024.0:N0} KB");
     table.Write(Console.Out);
     return 0;
 }
 
+static string ProjectLabel(AgentSource source, FileInfo f) => source switch
+{
+    // Copilot: <User>/workspaceStorage/<hash>/chatSessions/<id>.jsonl — the hash folder identifies the workspace.
+    AgentSource.Copilot => f.Directory?.Name == "emptyWindowChatSessions" ? "(no folder)" : f.Directory?.Parent?.Name ?? "",
+    _ => f.Directory?.Name ?? "",
+};
+
 static int Analyze(CliArgs opts)
 {
-    var file = ClaudeCodeSessionLocator.Resolve(opts.Target ?? "latest", opts.Root);
+    var target = opts.Target ?? "latest";
+    var isFile = File.Exists(target);
+    var source = opts.Source ?? (isFile ? SessionSources.Detect(target) : AgentSource.Claude);
+
+    if (!isFile && source == AgentSource.Cursor)
+    {
+        Console.Error.WriteLine("error: Cursor needs a file: export your usage CSV from the Cursor dashboard and pass its path.");
+        return 1;
+    }
+
+    var file = SessionSources.Resolve(source, target, opts.Root);
     if (file is null)
     {
-        Console.Error.WriteLine($"error: no session matching '{opts.Target ?? "latest"}'. Try 'turnroi sessions'.");
+        Console.Error.WriteLine($"error: no {source} session matching '{target}'. Try 'turnroi sessions --source {source.ToString().ToLowerInvariant()}'.");
         return 1;
     }
 
@@ -71,7 +97,17 @@ static int Analyze(CliArgs opts)
         return 1;
     }
 
-    var session = new ClaudeCodeJsonlAdapter().Read(file.FullName);
+    TurnRoi.Core.Model.AgentSession session;
+    try
+    {
+        session = SessionSources.AdapterFor(source).Read(file.FullName);
+    }
+    catch (Exception ex) when (ex is FormatException or IOException or UnauthorizedAccessException)
+    {
+        Console.Error.WriteLine($"error: could not read {file.FullName}: {ex.Message}");
+        return 1;
+    }
+
     var report = new SessionAnalyzer(prices).Analyze(session);
 
     if (opts.Json)

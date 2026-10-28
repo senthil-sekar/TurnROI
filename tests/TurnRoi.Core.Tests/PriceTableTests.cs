@@ -16,6 +16,15 @@ public class PriceTableTests
     }
 
     [Fact]
+    public void Treats_dotted_model_versions_like_hyphenated_ones()
+    {
+        Assert.Equal(5.00m, _prices.Find("claude-opus-4.5")!.Input);
+        Assert.Equal(3.00m, _prices.Find("claude-sonnet-4.5")!.Input);
+        Assert.Equal(0.25m, _prices.Find("gpt-5-mini")!.Input);
+        Assert.Equal(1.25m, _prices.Find("gpt-5")!.Input);
+    }
+
+    [Fact]
     public void Unknown_models_are_unpriced_not_guessed()
     {
         Assert.Null(_prices.Find("some-future-model"));

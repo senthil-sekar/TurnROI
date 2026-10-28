@@ -37,7 +37,9 @@ internal static class ConsoleReport
             w.WriteLine(share >= 0.25m ? Ansi.Red(line) : line);
         }
         if (s.SkippedLines > 0)
-            w.WriteLine(Ansi.Yellow($"  {s.SkippedLines} transcript lines could not be parsed (format may have changed)"));
+            w.WriteLine(Ansi.Yellow($"  {s.SkippedLines} lines/rows could not be parsed (format may have changed)"));
+        foreach (var note in s.Notes)
+            w.WriteLine(Ansi.Dim($"  Note: {note}"));
         w.WriteLine();
 
         // Turns
