@@ -28,6 +28,11 @@ jobs:
             echo "::group::$f"; $cli analyze "$f" --no-git > /dev/null; echo "::endgroup::"
           done
           $cli profile tests/TurnRoi.Core.Tests/Fixtures/claude-code-basic.jsonl --no-git > /dev/null
-          $cli hooks print > /dev/null
+          $cli hooks print --agent all > /dev/null
+          demo="$RUNNER_TEMP/demo" && mkdir -p "$demo"
+          $cli profile tests/TurnRoi.Core.Tests/Fixtures/claude-code-basic.jsonl --apply --agent all --dir "$demo" --yes --no-git > /dev/null
+          test -f "$demo/.claude/skills/repo-efficiency/SKILL.md" && test -f "$demo/.cursor/hooks.json" && test -f "$demo/.github/hooks/turnroi.json"
+          $cli profile --undo --dir "$demo" > /dev/null
+          test ! -e "$demo/.cursor"
       - name: Pack dotnet tool
         run: dotnet pack src/TurnRoi.Cli -c Release --no-build -o nupkg

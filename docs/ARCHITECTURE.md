@@ -10,7 +10,8 @@ src/TurnRoi.Core            Library, no dependencies beyond the .NET base librar
   Adapters/                 One adapter per agent + SessionSources (discovery, auto-detection)
   Pricing/                  Embedded price table (prices.json), longest-prefix model matching
   Analysis/                 SessionAnalyzer (findings), Outcomes (ROI), ToolKinds, WasteProfile
-  Guardrails/               GuardrailEngine: decision logic behind the Claude Code hooks
+  Guardrails/               GuardrailEngine (decisions), HookProtocol (per-agent payloads/answers), ReadLedger
+  Apply/                    RepoGuidance (rules, skill, tuned settings), ApplyPlanner (per-agent files), ApplyRunner (backup/undo)
 src/TurnRoi.Cli             `turnroi` dotnet tool: argument parsing, console/JSON reports, hook I/O
 tests/TurnRoi.Core.Tests    xUnit tests; Fixtures/ holds one synthetic session per agent
 ```
@@ -115,7 +116,7 @@ Decision order:
 
 Spend per outcome is summed by cost when every call is priced, otherwise by tokens.
 
-## Guardrails (Claude Code hooks)
+## Guardrails (hooks)
 
 `turnroi hooks install` adds two entries to the chosen settings file, replacing any earlier TurnROI entries and leaving everything else untouched:
 
@@ -133,6 +134,44 @@ Spend per outcome is summed by cost when every call is priced, otherwise by toke
 - **Re-read guard (PreToolUse, `rereadGuard: "block"`)** blocks a `Read` of a path and range that was already read successfully, when there has been no edit since and the file's modified time is not later than that read. The in-flight call has no result yet, so it is never mistaken for the earlier read.
 - **Turn budget (`turnBudgetTokens`, default 5,000,000; or `turnBudgetUsd`)** counts the current turn's total tokens. With `budgetAction: "warn"`, PostToolUse tells the agent once per turn to wrap up; a marker file in the temp folder prevents repeats. With `"block"`, PreToolUse refuses every further tool call this turn and asks the agent to summarize and check in.
 - **Output nudge (PostToolUse, `outputWarnTokens`, default 8,000)** fires when a tool response is at least that many estimated tokens, and tells the agent how to filter output or read a range next time.
+
+### Hooks for Cursor and GitHub Copilot
+
+`HookProtocol` translates each agent's hook format; the CLI is called as `turnroi hook <phase> --agent <agent>`, and without `--agent` the agent is detected from the payload (`conversation_id` means Cursor).
+
+| | Claude Code | GitHub Copilot | Cursor |
+|---|---|---|---|
+| Config | `.claude/settings(.local).json` | `.github/hooks/turnroi.json` (VS Code agent mode; Copilot CLI/cloud agent read the same file) | `.cursor/hooks.json` (`version: 1`, `preToolUse`/`postToolUse`) |
+| Payload | `tool_name`, `tool_input`, `tool_response`, `transcript_path` | VS Code: Claude-style snake_case; CLI: `toolName`, `toolArgs` (JSON string), `toolResult` | `tool_name`, `tool_input`, `tool_output`, `conversation_id`, `workspace_roots` |
+| Answer | stderr + exit 2 | stderr + exit 2 | JSON on stdout: `{"permission":"allow"\|"deny","agent_message",…}`; post: `{"additional_context":…}` |
+
+Cursor treats invalid output from a permission hook as a block, so TurnROI always prints a permission, even when it fails internally (it then allows).
+
+Copilot's and Cursor's transcripts aren't parsed by the hooks, so the re-read guard uses a **read ledger**: a small JSON file per agent and conversation in the temp folder. Completed reads are recorded on PostToolUse; edits forget the file. The engine then sees the ledger as a session, so the rule is identical everywhere. (VS Code Copilot also runs hooks from `.claude/settings.json`; a transcript outside `~/.claude` routes those calls to the ledger too.) The turn budget needs token counts, which only Claude Code transcripts provide.
+
+## Apply: rules, skill and settings per agent
+
+`turnroi profile --apply --agent <agents>` learns from the sessions run in the project folder (`--dir`, default the current folder), unless `--project` or an explicit file is given. It builds `RepoGuidance`:
+
+- **Rules** (always on, a few lines): quiet ways to run the noisiest commands (≥ 10k tokens of output), "don't re-read unchanged files" when re-reads occurred, "run the tests before finishing" when ≥ 10% of spend was failing or ≥ 30% unverified, and "plan before multi-file changes" when ≥ 15% was wasted.
+- **Skill** `repo-efficiency` (loaded on demand): quiet invocations (`Quiet.For`: `dotnet test --nologo -v q`, `pytest -q`, `npm ci --silent`, …; otherwise `… 2>&1 | tail -n 40`) and outlines of re-read files (`Outline.Of`: type/function declarations or Markdown headings with line numbers, up to 40 entries). Outlines are stamped with the HEAD commit, and the skill tells the agent to search instead of trusting line numbers if the file changed since.
+- **Settings**: `.turnroi.json`, with the turn budget tuned to 4× the median turn once there are ≥ 10 turns.
+
+`ApplyPlanner` writes them in each agent's own place:
+
+| | Claude Code | Cursor | GitHub Copilot |
+|---|---|---|---|
+| Rules | Block in `CLAUDE.md` | `.cursor/rules/turnroi.mdc` (`alwaysApply: true`) | Block in `.github/copilot-instructions.md` |
+| Skill | `.claude/skills/repo-efficiency/SKILL.md` | `.cursor/skills/…` | `.github/skills/…` |
+| Hooks | `.claude/settings.local.json` (`--shared`: `settings.json`) | `.cursor/hooks.json` | `.github/hooks/turnroi.json` |
+
+Ownership rules:
+
+- Shared files get a block between `<!-- turnroi:begin … -->` and `<!-- turnroi:end -->` that is replaced on each run.
+- Settings files get TurnROI's hook entries replaced and everything else kept.
+- Whole files are written only when absent or already generated by TurnROI; anything else is reported as skipped.
+
+`ApplyRunner` copies every file it will touch to `.turnroi/backup/<timestamp>/`, with a manifest, before writing; `.turnroi/` gets its own `.gitignore`. `--undo` restores the newest backup: old content comes back, created files are deleted along with any folders left empty. Without `--yes`, the CLI previews and asks; with redirected input it only previews.
 
 ## Waste profile and compare
 
@@ -163,4 +202,6 @@ Spend per outcome is summed by cost when every call is priced, otherwise by toke
 - Outcome signals are heuristics. A reverted change can still have been useful exploration, and pushback detection reads only the start of the next prompt.
 - Copilot doesn't record tool output sizes. Older Copilot records hold only the last call's tokens.
 - Cursor has no prompts or tools in its export. Joining it with local `state.vscdb` prompts needs SQLite, which is not yet included.
-- Not yet supported: Copilot CLI, OpenCode, OpenTelemetry GenAI exports, an MCP server.
+- Not yet supported: Copilot CLI sessions as an analysis source, OpenCode, OpenTelemetry GenAI exports, an MCP server.
+- Cursor's usage export has no tool calls, so rules and skills for Cursor have to be learned from another agent's history (`--source … --agent cursor`).
+- Hook payload details for Cursor and Copilot are based on their published docs; field names are read tolerantly and anything unrecognized fails open.

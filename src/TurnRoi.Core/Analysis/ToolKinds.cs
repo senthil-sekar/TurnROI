@@ -9,13 +9,13 @@ namespace TurnRoi.Core.Analysis;
 public static class ToolKinds
 {
     private static readonly HashSet<string> ReadNames = new(StringComparer.OrdinalIgnoreCase)
-        { "Read", "NotebookRead", "view", "read_file", "copilot_readFile" };
+        { "Read", "NotebookRead", "view", "read_file", "readFile", "copilot_readFile" };
 
     private static readonly HashSet<string> EditNames = new(StringComparer.OrdinalIgnoreCase)
         { "Edit", "MultiEdit", "Write", "NotebookEdit", "apply_patch", "write_file", "edit_file" };
 
     private static readonly HashSet<string> ShellNames = new(StringComparer.OrdinalIgnoreCase)
-        { "Bash", "run_in_terminal", "shell", "local_shell", "exec_command", "container.exec" };
+        { "Bash", "Shell", "run_in_terminal", "shell", "local_shell", "exec_command", "container.exec" };
 
     private static readonly Regex TestCommand = new(
         @"\b(dotnet\s+test|npm\s+(run\s+)?test|yarn\s+test|pnpm\s+(run\s+)?test|npx\s+(jest|vitest)|pytest|python3?\s+-m\s+pytest|jest|vitest|go\s+test|cargo\s+test|mvn\s+(\S+\s+)*test|gradlew?\s+(\S+\s+)*test|rspec|phpunit|mix\s+test|swift\s+test)\b",
@@ -40,7 +40,10 @@ public static class ToolKinds
         || t.Name.Contains("createFile", StringComparison.OrdinalIgnoreCase)
         || t.Name.Contains("insertEdit", StringComparison.OrdinalIgnoreCase)
         || t.Name.Contains("applyPatch", StringComparison.OrdinalIgnoreCase)
-        || t.Name.Contains("editFile", StringComparison.OrdinalIgnoreCase);
+        || t.Name.Contains("editFile", StringComparison.OrdinalIgnoreCase)
+        || t.Name.Contains("replace_string", StringComparison.OrdinalIgnoreCase)
+        || t.Name.Contains("create_file", StringComparison.OrdinalIgnoreCase)
+        || t.Name.Contains("insert_edit", StringComparison.OrdinalIgnoreCase);
 
     public static bool IsShell(ToolCall t) =>
         ShellNames.Contains(t.Name) || t.Name.Contains("terminal", StringComparison.OrdinalIgnoreCase);

@@ -85,7 +85,7 @@ public sealed class GuardrailEngine(GuardrailConfig config, PriceTable prices, F
             if (FindUnchangedPriorRead(session, e.FilePath, e.Range) is { } priorAt)
             {
                 return HookDecision.Deny(
-                    $"TurnROI: {e.FilePath} was already read{(e.Range is null ? "" : $" ({e.Range})")} at {priorAt:HH:mm:ss} " +
+                    $"TurnROI: {e.FilePath} was already read{(e.Range is null ? "" : $" ({e.Range})")} at {priorAt.ToLocalTime():HH:mm:ss} " +
                     "and has not changed since. Use the content you already have. If you really need it again, " +
                     "read a specific range with offset/limit.");
             }

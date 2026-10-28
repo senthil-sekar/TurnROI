@@ -24,6 +24,7 @@ public sealed record WasteProfile
     public required IReadOnlyList<NoisyCommand> NoisyCommands { get; init; }
     public required int LowCacheTurns { get; init; }
     public required long LargestTurnTokens { get; init; }
+    public required long MedianTurnTokens { get; init; }
     public required string? CommonTestCommand { get; init; }
     public required IReadOnlyList<Proposal> Proposals { get; init; }
 
@@ -86,6 +87,7 @@ public sealed record WasteProfile
             NoisyCommands = noisy,
             LowCacheTurns = lowCache,
             LargestTurnTokens = turns.Count == 0 ? 0 : turns.Max(t => t.Turn.Usage.Total),
+            MedianTurnTokens = turns.Count == 0 ? 0 : turns.Select(t => t.Turn.Usage.Total).Order().ElementAt(turns.Count / 2),
             CommonTestCommand = testCommand,
             Proposals = [],
         };

@@ -57,28 +57,39 @@ Every turn gets an outcome:
 
 Flags point at the waste inside a turn: **R** re-read an unchanged file, **O** oversized tool output, **C** low prompt-cache hit, **X** pushed back, **E** repeated tool errors.
 
-**2. Find recurring waste and what to change**
+**2. Fix it: rules, a skill and guardrails for your agent**
 
 ```bash
-turnroi profile --project claims-api --write turnroi-profile.md
+turnroi profile                                   # recurring waste across sessions + proposed fixes
+turnroi profile --apply --agent claude            # or cursor, copilot, all
+turnroi profile --undo                            # revert the last change
 ```
 
-Looks across your recent sessions for noisy commands, files re-read every session, and high pushback or failing-test rates. It then proposes specific fixes, such as CLAUDE.md lines or hook settings, each with its evidence. Nothing is applied automatically.
+`--apply` learns from this project's sessions and writes three things in each agent's native format. It previews every file and asks before writing anything:
 
-**3. Stop waste while the agent works (Claude Code)**
+| | Claude Code | Cursor | GitHub Copilot |
+|---|---|---|---|
+| Always-on rules (a few lines) | Block in `CLAUDE.md` | `.cursor/rules/turnroi.mdc` | Block in `.github/copilot-instructions.md` |
+| `repo-efficiency` skill | `.claude/skills/` | `.cursor/skills/` | `.github/skills/` |
+| Guardrail hooks | `.claude/settings.local.json` | `.cursor/hooks.json` | `.github/hooks/turnroi.json` |
 
-```bash
-turnroi hooks install            # this project, just you (.claude/settings.local.json)
-turnroi hooks install --shared   # this project, whole team (.claude/settings.json)
-```
+- **Rules** come from your history. Example: "Run `dotnet test` quietly (`dotnet test --nologo -v q`)", or "propose a plan before multi-file changes" when you push back often.
+- **The skill** loads only when relevant. It holds quiet versions of your noisiest commands and outlines, with line numbers, of the files the agent keeps re-reading, so it reads just the part it needs.
+- **The hooks** enforce rules live (below).
+
+Cursor's usage export has no tool calls, so rules and skills for Cursor come from your other agents' history (e.g. `--source copilot --agent cursor`); hooks work regardless.
+
+TurnROI only edits its own marked block, its own hook entries and files it generated, and backs up everything it touches. Run it again whenever you like to refresh the rules and skill.
+
+**3. Guardrails while the agent works**
 
 | Guardrail | Default | What happens |
 |---|---|---|
-| Re-read guard | on | Blocks reading a file the agent already has, unchanged |
+| Re-read guard | on | Blocks reading a file the agent already has, unchanged (all three agents) |
 | Output nudge | 8k tokens | After a huge tool output, tells the agent to filter next time |
-| Turn budget | 5M tokens, warn | Tells the agent to wrap up and check in, or blocks further tools with `"budgetAction": "block"` |
+| Turn budget | 5M tokens, warn | Claude Code only: tells the agent to wrap up and check in, or blocks with `"budgetAction": "block"` |
 
-Tune them in `.turnroi.json`, created on install. Remove them with `turnroi hooks uninstall`.
+Settings live in `.turnroi.json`. To install or remove only the hooks, run `turnroi hooks install --agent cursor` or `turnroi hooks uninstall --agent cursor`.
 
 **4. Check that a change helped**
 
@@ -90,12 +101,12 @@ Compares cost per turn, outcome shares and cache hits before and after a date, s
 
 ## Supported agents
 
-| Agent | Reads | Notes |
-|---|---|---|
-| Claude Code | `~/.claude/projects` transcripts | Fullest data: every model call, tool output sizes, hooks |
-| GitHub Copilot (VS Code) | VS Code chat sessions | Copilot bills premium requests, so cost is the API-equivalent price |
-| OpenAI Codex CLI | `~/.codex/sessions` rollouts | |
-| Cursor | Usage CSV from the Cursor dashboard | Cost as billed; no prompts, so turns are approximated and outcomes are unknown |
+| Agent | Analyze reads | `--apply` / hooks | Notes |
+|---|---|---|---|
+| Claude Code | `~/.claude/projects` transcripts | ✓ / ✓ | Fullest data: every model call and tool output size |
+| GitHub Copilot (VS Code) | VS Code chat sessions | ✓ / ✓ | Copilot bills premium requests, so cost is the API-equivalent price |
+| Cursor | Usage CSV from the Cursor dashboard | ✓ / ✓ | Cost as billed; the export has no prompts, so outcomes are unknown |
+| OpenAI Codex CLI | `~/.codex/sessions` rollouts | — | Its history can drive `--apply` for the other agents |
 
 Costs are estimates from token counts and a built-in price table; models it doesn't know are shown as unpriced rather than guessed. Use `--prices <file>` to supply your own. Run `turnroi --help` for every option, and `--json` for machine-readable output.
 

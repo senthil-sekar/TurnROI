@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0
+
+- **`turnroi profile --apply`** turns the waste profile into each agent's native files:
+  - always-on rules: a managed block in `CLAUDE.md` and `.github/copilot-instructions.md`, and `.cursor/rules/turnroi.mdc`
+  - a `repo-efficiency` skill (quiet versions of noisy commands, and outlines of often re-read files stamped with the commit)
+  - tuned `.turnroi.json`
+  - hooks
+
+  It previews every file, asks before writing, and never overwrites files it didn't create. **`--undo`** restores the backup.
+- **Hooks for Cursor and GitHub Copilot** (`.cursor/hooks.json`, `.github/hooks/turnroi.json`), with each agent's own payload and answer format. A per-conversation read ledger gives the re-read guard the same behavior everywhere.
+- `turnroi hooks install|uninstall|print --agent claude|cursor|copilot|all`.
+
 ## 0.1.0
 
 First release.

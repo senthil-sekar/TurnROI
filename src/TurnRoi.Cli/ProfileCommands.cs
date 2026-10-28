@@ -1,5 +1,6 @@
 using TurnRoi.Core.Adapters;
 using TurnRoi.Core.Analysis;
+using TurnRoi.Core.Apply;
 using TurnRoi.Core.Pricing;
 
 namespace TurnRoi.Cli;
@@ -9,7 +10,12 @@ internal static class ProfileCommands
 {
     public static int Profile(CliArgs opts, PriceTable prices)
     {
-        var reports = Load(opts, prices, out var error);
+        var projectDir = Path.GetFullPath(opts.ProjectDir ?? Directory.GetCurrentDirectory());
+        if (opts.Undo) return Undo(projectDir);
+
+        // When applying, learn only from sessions that ran in this project (unless --project says otherwise).
+        var explicitFile = opts.Target is { } targetFile && File.Exists(targetFile);
+        var reports = Load(opts, prices, out var error, opts.Apply && opts.Project is null && !explicitFile ? projectDir : null);
         if (error is not null) { Console.Error.WriteLine(error); return 1; }
 
         var profile = WasteProfile.Build(reports);
@@ -54,8 +60,101 @@ internal static class ProfileCommands
         {
             File.WriteAllText(opts.WritePath, profile.ToMarkdown($"TurnROI waste profile ({scope})"));
             w.WriteLine();
-            w.WriteLine($"Wrote {opts.WritePath}. Review it and apply what you agree with; TurnROI never changes your setup on its own.");
+            w.WriteLine($"Wrote {opts.WritePath}.");
         }
+
+        if (opts.Apply) return ApplyGuidance(opts, profile, projectDir);
+        if (profile.Proposals.Count > 0)
+        {
+            w.WriteLine();
+            w.WriteLine(Ansi.Dim("Turn these into rules, a skill and hooks for your agent: turnroi profile --apply --agent claude|cursor|copilot|all"));
+        }
+        return 0;
+    }
+
+    private static int ApplyGuidance(CliArgs opts, WasteProfile profile, string projectDir)
+    {
+        var w = Console.Out;
+        var agents = opts.Agents.Count > 0 ? opts.Agents : DefaultAgent(opts) is { } a ? [a] : null;
+        if (agents is null)
+        {
+            Console.Error.WriteLine("error: choose which agent(s) to write for: --agent claude|cursor|copilot|all");
+            return 2;
+        }
+
+        var guidance = RepoGuidance.Build(profile, projectDir, commit: GitCliHistory.Head(projectDir));
+        var (changes, skipped) = ApplyPlanner.Plan(projectDir, guidance,
+            new ApplyOptions(agents, HookCommand: opts.HookCommand ?? "turnroi", SharedClaudeSettings: opts.Shared));
+
+        w.WriteLine();
+        w.WriteLine(Ansi.Bold($"Planned changes for {string.Join(", ", agents)} in {projectDir}"));
+        foreach (var s in skipped) w.WriteLine(Ansi.Yellow($"  skipped {s}"));
+        if (changes.Count == 0)
+        {
+            w.WriteLine("  Nothing to change: everything is already up to date.");
+            return 0;
+        }
+
+        foreach (var c in changes)
+        {
+            var rel = Path.GetRelativePath(projectDir, c.Path);
+            w.WriteLine();
+            w.WriteLine(Ansi.Bold($"  {(c.IsCreate ? "create" : c.IsDelete ? "delete" : "update")} {rel}") + Ansi.Dim($"  ({c.Description})"));
+            foreach (var line in Preview(c).Split('\n').Take(40)) w.WriteLine(Ansi.Dim("  │ ") + line);
+        }
+        w.WriteLine();
+
+        if (!opts.Yes)
+        {
+            if (Console.IsInputRedirected)
+            {
+                w.WriteLine("Preview only. Re-run with --yes to write these files.");
+                return 0;
+            }
+            w.Write("Write these files? [y/N] ");
+            var answer = Console.ReadLine()?.Trim();
+            if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) && !string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
+            {
+                w.WriteLine("Nothing written.");
+                return 0;
+            }
+        }
+
+        ApplyRunner.Apply(projectDir, changes);
+        w.WriteLine(Ansi.Green($"Wrote {changes.Count} file(s). Undo with: turnroi profile --undo"));
+        w.WriteLine("Restart the agent so it picks up the new rules, skill and hooks. Check the effect later with: turnroi compare --split <today>");
+        return 0;
+    }
+
+    /// <summary>What to show for a change: the new TurnROI block for shared files, the new file otherwise.</summary>
+    private static string Preview(FileChange c)
+    {
+        if (c.After is null) return "(file removed)";
+        var start = c.After.IndexOf(ApplyPlanner.BlockStart, StringComparison.Ordinal);
+        var end = c.After.IndexOf(ApplyPlanner.BlockEnd, StringComparison.Ordinal);
+        return start >= 0 && end > start
+            ? c.After[(start + ApplyPlanner.BlockStart.Length)..end].Trim('\n')
+            : c.After.TrimEnd('\n');
+    }
+
+    private static TargetAgent? DefaultAgent(CliArgs opts) => opts.Source switch
+    {
+        null or AgentSource.Claude => TargetAgent.Claude,
+        AgentSource.Copilot => TargetAgent.Copilot,
+        AgentSource.Cursor => TargetAgent.Cursor,
+        _ => null,
+    };
+
+    private static int Undo(string projectDir)
+    {
+        var restored = ApplyRunner.Undo(projectDir);
+        if (restored is null)
+        {
+            Console.WriteLine("Nothing to undo.");
+            return 0;
+        }
+        foreach (var p in restored) Console.WriteLine($"restored {p}");
+        Console.WriteLine(Ansi.Green("Undid the last TurnROI change."));
         return 0;
     }
 
@@ -100,7 +199,7 @@ internal static class ProfileCommands
         return 0;
     }
 
-    private static List<SessionReport> Load(CliArgs opts, PriceTable prices, out string? error)
+    private static List<SessionReport> Load(CliArgs opts, PriceTable prices, out string? error, string? underDir = null)
     {
         error = null;
         var source = opts.Source ?? (opts.Target is { } f && File.Exists(f) ? SessionSources.Detect(f) : AgentSource.Claude);
@@ -125,6 +224,7 @@ internal static class ProfileCommands
             {
                 var session = adapter.Read(file.FullName);
                 if (opts.Project is { } p && !(session.Cwd ?? "").Contains(p, StringComparison.OrdinalIgnoreCase)) continue;
+                if (underDir is not null && session.Cwd is { } cwd && !IsUnder(cwd, underDir)) continue;
                 var report = analyzer.Analyze(session);
                 if (opts.Since is { } since && Start(report) < since) continue;
                 if (report.Turns.Any(x => x.Turn.Calls.Count > 0)) reports.Add(report);
@@ -137,6 +237,14 @@ internal static class ProfileCommands
 
         if (reports.Count == 0) error = "error: no sessions matched (check --project / --since).";
         return reports;
+    }
+
+    private static bool IsUnder(string path, string dir)
+    {
+        var p = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        var d = Path.TrimEndingDirectorySeparator(Path.GetFullPath(dir));
+        var cmp = OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+        return p.Equals(d, cmp) || p.StartsWith(d + Path.DirectorySeparatorChar, cmp);
     }
 
     private static DateTimeOffset Start(SessionReport r) =>

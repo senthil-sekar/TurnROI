@@ -18,6 +18,11 @@ internal sealed class CliArgs
     public DateTimeOffset? Split { get; private set; }
     public string? WritePath { get; private set; }
     public bool LimitSet { get; private set; }
+    public string? ProjectDir { get; private set; }
+    public List<Core.Apply.TargetAgent> Agents { get; } = new();
+    public bool Apply { get; private set; }
+    public bool Undo { get; private set; }
+    public bool Yes { get; private set; }
     public int Top { get; private set; } = 15;
     public int Limit { get; private set; } = 20;
     public string? Error { get; private set; }
@@ -34,13 +39,18 @@ internal sealed class CliArgs
           turnroi profile                                    Waste patterns across sessions + proposed fixes
           turnroi compare --split <date>                     Before/after a change (e.g. installing the hooks)
 
-        Guardrails (Claude Code)
-          turnroi hooks install [--shared | --user]          Add TurnROI hooks to .claude/settings(.local).json
-          turnroi hooks uninstall | print
-          turnroi hook pre-tool-use | post-tool-use          Called by Claude Code; reads the event on stdin
+        Fix
+          turnroi profile --apply --agent <a>                Write rules, a repo skill, guardrail settings and hooks
+                                                             for claude, cursor, copilot or all (previews, then asks)
+          turnroi profile --undo                             Revert the last change TurnROI wrote
+          turnroi hooks install|uninstall|print --agent <a>  Guardrail hooks only
+          turnroi hook pre-tool-use|post-tool-use            Called by the agent; reads the event on stdin
 
         Options
-          --source <s>      claude (default), copilot, codex or cursor. Files are auto-detected.
+          --source <s>      Sessions to read: claude (default), copilot, codex or cursor. Files are auto-detected.
+          --agent <a>       Agent(s) to write for: claude, cursor, copilot, all (comma-separated works too)
+          --dir <path>      Project folder to write into (default: current folder)
+          --yes             Write without asking
           --project <text>  profile/compare: only sessions whose folder contains <text>
           --since <date>    profile/compare: only sessions started on or after <date>
           --limit <n>       How many recent sessions to read (sessions: 20, profile/compare: 100)
@@ -49,8 +59,9 @@ internal sealed class CliArgs
           --top <n> | --all analyze: most expensive n turns (default 15), or every turn in order
           --prices <file>   Override the built-in price table
           --no-git          Don't check git history for edits committed after the session
-          --root <dir>      Override where sessions are searched for (hooks: project folder, also --dir)
-          --command <cmd>   hooks install: how hooks invoke TurnROI (default "turnroi")
+          --root <dir>      Override where sessions are searched for
+          --shared | --user hooks (claude): .claude/settings.json, or ~/.claude/settings.json (cursor: ~/.cursor)
+          --command <cmd>   How hooks invoke TurnROI (default "turnroi")
 
         Turn outcomes
           productive  changed code; tests passed or it was committed      wasted       your next prompt pushed back
@@ -84,7 +95,20 @@ internal sealed class CliArgs
                 case "--shared": a.Shared = true; break;
                 case "--user": a.UserScope = true; break;
                 case "--command": a.HookCommand = Value(ref i); break;
-                case "--dir": a.Root = Value(ref i); break;
+                case "--dir": a.ProjectDir = Value(ref i); break;
+                case "--apply": a.Apply = true; break;
+                case "--undo": a.Undo = true; break;
+                case "--yes" or "-y": a.Yes = true; break;
+                case "--agent":
+                    var agentText = Value(ref i);
+                    if (agentText is null) break;
+                    foreach (var part in agentText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    {
+                        if (part.Equals("all", StringComparison.OrdinalIgnoreCase)) a.Agents.AddRange(Enum.GetValues<Core.Apply.TargetAgent>());
+                        else if (Enum.TryParse<Core.Apply.TargetAgent>(part, ignoreCase: true, out var ag)) a.Agents.Add(ag);
+                        else { a.Error = $"unknown agent '{part}' (expected claude, cursor, copilot or all)"; break; }
+                    }
+                    break;
                 case "--help" or "-h": a.Command = "help"; return a;
                 case "--root": a.Root = Value(ref i); break;
                 case "--source":

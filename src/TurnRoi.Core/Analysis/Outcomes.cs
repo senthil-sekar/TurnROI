@@ -77,6 +77,10 @@ public sealed class GitCliHistory : IGitHistory
         return commits;
     }
 
+    /// <summary>Short commit id of HEAD, or null when not a git repo.</summary>
+    public static string? Head(string directory) =>
+        Directory.Exists(directory) ? Run(directory, "rev-parse", "--short", "HEAD")?.Trim() is { Length: > 0 } sha ? sha : null : null;
+
     private static string? Run(string dir, params string[] args)
     {
         try

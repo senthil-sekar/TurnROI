@@ -33,7 +33,7 @@ static int Run(string[] args)
         case "compare":
             return LoadPrices(opts) is { } p2 ? ProfileCommands.Compare(opts, p2) : 1;
         case "hook":
-            return Hooks.Run(opts.Target, Console.In, Console.Error);
+            return Hooks.Run(opts.Target, opts.Agents.Count > 0 ? opts.Agents[0] : null, Console.In, Console.Out, Console.Error);
         case "hooks":
             return Hooks.Manage(opts);
         default:
