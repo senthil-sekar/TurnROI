@@ -21,9 +21,11 @@ public sealed record Finding(
     Severity Severity,
     int? TurnIndex,
     string Message,
-    long? EstimatedTokens = null);
+    long? EstimatedTokens = null,
+    string? Subject = null);
 
-public sealed record TurnReport(Turn Turn, decimal? Cost, IReadOnlyList<Finding> Findings)
+public sealed record TurnReport(Turn Turn, decimal? Cost, IReadOnlyList<Finding> Findings,
+    TurnOutcome Outcome = TurnOutcome.Unknown, OutcomeEvidence? Evidence = null)
 {
     public bool WasCorrected => Findings.Any(f => f.Kind == FindingKind.CorrectedNextTurn);
 }
@@ -33,7 +35,8 @@ public sealed record SessionReport(
     IReadOnlyList<TurnReport> Turns,
     IReadOnlyList<Finding> Findings,
     decimal? TotalCost,
-    IReadOnlyList<string> UnpricedModels)
+    IReadOnlyList<string> UnpricedModels,
+    IReadOnlyList<OutcomeTotal> Outcomes)
 {
     /// <summary>Cost of turns the human immediately corrected or interrupted. A first, rough proxy for "not worth it".</summary>
     public decimal? CorrectedSpend =>
@@ -59,9 +62,6 @@ public sealed class AnalyzerOptions
 /// </summary>
 public sealed class SessionAnalyzer
 {
-    private static readonly HashSet<string> ReadTools = new(StringComparer.OrdinalIgnoreCase) { "Read", "NotebookRead", "view" };
-    private static readonly HashSet<string> WriteTools = new(StringComparer.OrdinalIgnoreCase) { "Edit", "MultiEdit", "Write", "NotebookEdit" };
-
     // Matches the start of a human reply that pushes back on the previous turn.
     private static readonly Regex CorrectionPattern = new(
         @"^\s*(\[Request interrupted by user|no\b|nope\b|wrong\b|incorrect\b|revert\b|undo\b|stop\b|that'?s (not|wrong)|this is (not|wrong)|that (didn'?t|did not|doesn'?t) work|(it'?s |it is )?still (not|broken|failing|wrong)|you (broke|missed|forgot)|why did you)",
@@ -69,11 +69,14 @@ public sealed class SessionAnalyzer
 
     private readonly PriceTable _prices;
     private readonly AnalyzerOptions _options;
+    private readonly IGitHistory? _git;
 
-    public SessionAnalyzer(PriceTable prices, AnalyzerOptions? options = null)
+    /// <param name="git">Optional git history lookup so edits committed after the session count as kept.</param>
+    public SessionAnalyzer(PriceTable prices, AnalyzerOptions? options = null, IGitHistory? git = null)
     {
         _prices = prices;
         _options = options ?? new AnalyzerOptions();
+        _git = git;
     }
 
     public static bool IsCorrection(string prompt) => CorrectionPattern.IsMatch(prompt);
@@ -89,8 +92,12 @@ public sealed class SessionAnalyzer
         FindCorrections(session, perTurn);
         FindToolErrors(session, perTurn);
 
+        var pushedBack = perTurn.Where(kv => kv.Value.Any(f => f.Kind == FindingKind.CorrectedNextTurn))
+            .Select(kv => kv.Key).ToHashSet();
+        var outcomes = OutcomeClassifier.Classify(session, pushedBack, _git);
+
         var turnReports = session.Turns
-            .Select(t => new TurnReport(t, _prices.Cost(t.Calls), perTurn[t.Index]))
+            .Select(t => new TurnReport(t, _prices.Cost(t.Calls), perTurn[t.Index], outcomes[t.Index].Outcome, outcomes[t.Index].Evidence))
             .ToList();
 
         var allCalls = session.Turns.SelectMany(t => t.Calls).ToList();
@@ -99,12 +106,12 @@ public sealed class SessionAnalyzer
 
         sessionFindings.AddRange(turnReports.SelectMany(t => t.Findings));
 
-        return new SessionReport(session, turnReports, sessionFindings, total, unpriced);
+        return new SessionReport(session, turnReports, sessionFindings, total, unpriced, OutcomeClassifier.Summarize(turnReports));
     }
 
     private static void FindRepeatedReads(AgentSession session, Dictionary<int, List<Finding>> perTurn)
     {
-        // A re-read only counts as waste when nothing wrote to the file in between.
+        // A re-read only counts as waste when the same part of the file is read again with no edit in between.
         var readsSinceLastWrite = new Dictionary<string, int>(StringComparer.Ordinal);
 
         foreach (var turn in session.Turns)
@@ -112,23 +119,25 @@ public sealed class SessionAnalyzer
         {
             if (tool.Target is null) continue;
 
-            if (WriteTools.Contains(tool.Name))
+            if (ToolKinds.IsEdit(tool))
             {
-                readsSinceLastWrite.Remove(tool.Target);
+                foreach (var key in readsSinceLastWrite.Keys.Where(k => k == tool.Target || k.StartsWith(tool.Target + "#", StringComparison.Ordinal)).ToList())
+                    readsSinceLastWrite.Remove(key);
                 continue;
             }
 
-            if (!ReadTools.Contains(tool.Name)) continue;
+            if (!ToolKinds.IsRead(tool)) continue;
 
-            readsSinceLastWrite.TryGetValue(tool.Target, out var count);
-            readsSinceLastWrite[tool.Target] = ++count;
+            var readKey = tool.Range is null ? tool.Target : $"{tool.Target}#{tool.Range}";
+            readsSinceLastWrite.TryGetValue(readKey, out var count);
+            readsSinceLastWrite[readKey] = ++count;
 
             if (count >= 2)
             {
                 perTurn[turn.Index].Add(new Finding(
                     FindingKind.RepeatedRead, Severity.Warning, turn.Index,
                     $"Re-read of unchanged file {ShortPath(tool.Target)} (read #{count} since last edit)",
-                    tool.EstimatedResultTokens));
+                    tool.EstimatedResultTokens, tool.Target));
             }
         }
     }
@@ -142,7 +151,8 @@ public sealed class SessionAnalyzer
             var target = tool.Target is null ? "" : $" ({Truncate(tool.Target, 60)})";
             perTurn[turn.Index].Add(new Finding(
                 FindingKind.OversizedToolResult, est >= _options.OversizedResultTokens * 4 ? Severity.High : Severity.Warning,
-                turn.Index, $"{tool.Name}{target} returned ~{est:N0} tokens", est));
+                turn.Index, $"{tool.Name}{target} returned ~{est:N0} tokens", est,
+                ToolKinds.IsShell(tool) && tool.Target is not null ? ToolKinds.CommandLabel(tool.Target) : tool.Target));
         }
     }
 

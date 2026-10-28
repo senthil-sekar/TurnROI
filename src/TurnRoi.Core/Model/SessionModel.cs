@@ -40,8 +40,17 @@ public sealed class ToolCall
     /// <summary>The primary target: file path for file tools, command for shell, pattern for search.</summary>
     public string? Target { get; init; }
 
+    /// <summary>Part of the target read, e.g. "offset=100,limit=50" for a partial file read; null for the whole thing.</summary>
+    public string? Range { get; init; }
+
     public int? ResultChars { get; set; }
     public bool IsError { get; set; }
+
+    /// <summary>Last few hundred characters of the result, kept to read test outcomes ("3 failed", "Passed!").</summary>
+    public string? ResultTail { get; set; }
+
+    /// <summary>When the call was made, if the source records it.</summary>
+    public DateTimeOffset? Timestamp { get; init; }
 
     /// <summary>Rough token estimate of the result (chars / 4). Provider-reported usage remains the source of truth.</summary>
     public long? EstimatedResultTokens => ResultChars is null ? null : (long)Math.Ceiling(ResultChars.Value / 4.0);

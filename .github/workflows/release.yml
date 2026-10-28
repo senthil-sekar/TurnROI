@@ -1,0 +1,32 @@
+name: release
+
+# Push a tag like v0.1.0 to build, test, pack and publish the dotnet tool.
+# Publishing to NuGet runs only when the NUGET_API_KEY repository secret is set.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Version from tag
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - run: dotnet test -c Release
+      - run: dotnet pack src/TurnRoi.Cli -c Release -o nupkg -p:Version=$VERSION
+      - name: Publish to NuGet
+        if: env.NUGET_API_KEY != ''
+        run: dotnet nuget push nupkg/*.nupkg --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" nupkg/*.nupkg --title "TurnROI $VERSION" --notes-file CHANGELOG.md

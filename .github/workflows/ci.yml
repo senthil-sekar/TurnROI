@@ -19,5 +19,15 @@ jobs:
       - run: dotnet restore
       - run: dotnet build --no-restore -c Release
       - run: dotnet test --no-build -c Release --verbosity normal
-      - name: Smoke test CLI on fixture
-        run: dotnet run --project src/TurnRoi.Cli -c Release --no-build -- analyze tests/TurnRoi.Core.Tests/Fixtures/claude-code-basic.jsonl --json
+      - name: Smoke test CLI on every source
+        shell: bash
+        run: |
+          set -e
+          cli="dotnet run --project src/TurnRoi.Cli -c Release --no-build --"
+          for f in tests/TurnRoi.Core.Tests/Fixtures/*.json*  tests/TurnRoi.Core.Tests/Fixtures/*.csv; do
+            echo "::group::$f"; $cli analyze "$f" --no-git > /dev/null; echo "::endgroup::"
+          done
+          $cli profile tests/TurnRoi.Core.Tests/Fixtures/claude-code-basic.jsonl --no-git > /dev/null
+          $cli hooks print > /dev/null
+      - name: Pack dotnet tool
+        run: dotnet pack src/TurnRoi.Cli -c Release --no-build -o nupkg

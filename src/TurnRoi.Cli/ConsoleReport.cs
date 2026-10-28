@@ -30,17 +30,13 @@ internal static class ConsoleReport
         w.WriteLine($"  Est. cost      {Money(report.TotalCost)}" +
             (report.UnpricedModels.Count > 0 ? Ansi.Yellow($"  unpriced models: {string.Join(", ", report.UnpricedModels)} (use --prices)") : ""));
 
-        if (report.TotalCost is > 0 && report.CorrectedSpend is { } corrected)
-        {
-            var share = corrected / report.TotalCost.Value;
-            var line = $"  Spend on turns you pushed back on: {Money(corrected)} ({Percent((double)share)})";
-            w.WriteLine(share >= 0.25m ? Ansi.Red(line) : line);
-        }
         if (s.SkippedLines > 0)
             w.WriteLine(Ansi.Yellow($"  {s.SkippedLines} lines/rows could not be parsed (format may have changed)"));
         foreach (var note in s.Notes)
             w.WriteLine(Ansi.Dim($"  Note: {note}"));
         w.WriteLine();
+
+        WriteOutcomes(w, report.Outcomes);
 
         // Turns
         var turns = report.Turns.Where(t => t.Turn.Calls.Count > 0).ToList();
@@ -52,7 +48,7 @@ internal static class ConsoleReport
             ? $"Turns with model calls ({turns.Count})"
             : $"Most expensive turns (top {shown.Count} of {turns.Count})"));
 
-        var table = new TextTable("#", "Prompt", "Calls", "Tools", "Context", "Cache", "Output", "Cost", "Flags")
+        var table = new TextTable("#", "Prompt", "Calls", "Tools", "Context", "Cache", "Output", "Cost", "Outcome", "Flags")
             .AlignRight(0, 2, 3, 4, 5, 6, 7);
         foreach (var t in shown)
         {
@@ -66,6 +62,7 @@ internal static class ConsoleReport
                 u.CacheHitRatio is { } r ? Percent(r) : "-",
                 Compact(u.Output),
                 Money(t.Cost),
+                OutcomeLabel(t.Outcome),
                 Flags(t));
         }
         table.Write(w, "  ");
@@ -98,6 +95,52 @@ internal static class ConsoleReport
         w.WriteLine(Ansi.Dim("\"Pushed back\" is a heuristic on your next prompt, not a verdict."));
         if (priceNote is not null && report.UnpricedModels.Count > 0) w.WriteLine(Ansi.Dim(priceNote));
     }
+
+    /// <summary>"Where the spend went": cost (or tokens when unpriced) per outcome.</summary>
+    internal static void WriteOutcomes(TextWriter w, IReadOnlyList<OutcomeTotal> outcomes)
+    {
+        if (outcomes.Count == 0 || outcomes.All(o => o.Outcome == TurnOutcome.Unknown)) return;
+        var priced = outcomes.All(o => o.Cost is not null) && outcomes.Sum(o => o.Cost ?? 0) > 0;
+        var total = priced ? (double)outcomes.Sum(o => o.Cost ?? 0) : outcomes.Sum(o => o.Tokens);
+        if (total <= 0) return;
+
+        w.WriteLine(Ansi.Bold("Where the spend went") + Ansi.Dim(priced ? "" : "  (by tokens; some models unpriced)"));
+        var table = new TextTable("Outcome", priced ? "Cost" : "Tokens", "Share", "Turns", "Meaning").AlignRight(1, 2, 3);
+        foreach (var o in outcomes)
+        {
+            var amount = priced ? (double)(o.Cost ?? 0) : o.Tokens;
+            table.Add(OutcomeLabel(o.Outcome), priced ? Money(o.Cost) : Compact(o.Tokens), Percent(amount / total),
+                o.Turns.ToString(), OutcomeMeaning(o.Outcome));
+        }
+        table.Write(w, "  ");
+
+        double Share(TurnOutcome k) => outcomes.Where(o => o.Outcome == k)
+            .Sum(o => priced ? (double)(o.Cost ?? 0) : o.Tokens) / total;
+        var waste = Share(TurnOutcome.Wasted) + Share(TurnOutcome.Failing);
+        if (waste >= 0.25)
+            w.WriteLine(Ansi.Red($"  {Percent(waste)} of spend went to turns that were pushed back on or left tests failing."));
+        w.WriteLine();
+    }
+
+    internal static string OutcomeLabel(TurnOutcome o) => o switch
+    {
+        TurnOutcome.Productive => "productive",
+        TurnOutcome.Unverified => "unverified",
+        TurnOutcome.Failing => "failing",
+        TurnOutcome.Wasted => "wasted",
+        TurnOutcome.Exploratory => "exploratory",
+        _ => "unknown",
+    };
+
+    private static string OutcomeMeaning(TurnOutcome o) => o switch
+    {
+        TurnOutcome.Productive => "changed code; tests passed or committed",
+        TurnOutcome.Unverified => "changed code; no test or commit seen",
+        TurnOutcome.Failing => "changed code; last test run failed",
+        TurnOutcome.Wasted => "your next prompt pushed back",
+        TurnOutcome.Exploratory => "read/answered; no code changed",
+        _ => "not enough data in this source",
+    };
 
     private static string Flags(TurnReport t)
     {

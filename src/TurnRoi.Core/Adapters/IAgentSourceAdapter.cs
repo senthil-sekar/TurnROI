@@ -17,6 +17,7 @@ public enum AgentSource
 {
     Claude,
     Copilot,
+    Codex,
     Cursor,
 }
 
@@ -29,14 +30,16 @@ public static class SessionSources
     {
         AgentSource.Claude => new ClaudeCodeJsonlAdapter(),
         AgentSource.Copilot => new CopilotVsCodeAdapter(),
+        AgentSource.Codex => new CodexRolloutAdapter(),
         AgentSource.Cursor => new CursorUsageCsvAdapter(),
         _ => throw new ArgumentOutOfRangeException(nameof(source)),
     };
 
-    /// <summary>Picks a source from the file itself: Cursor CSV, Copilot chat session, else Claude Code transcript.</summary>
+    /// <summary>Picks a source from the file itself: Cursor CSV, Codex rollout, Copilot chat session, else Claude Code transcript.</summary>
     public static AgentSource Detect(string path)
     {
         if (new CursorUsageCsvAdapter().CanRead(path)) return AgentSource.Cursor;
+        if (new CodexRolloutAdapter().CanRead(path)) return AgentSource.Codex;
         if (new CopilotVsCodeAdapter().CanRead(path)) return AgentSource.Copilot;
         return AgentSource.Claude;
     }
@@ -46,6 +49,7 @@ public static class SessionSources
     {
         AgentSource.Claude => [ClaudeRoot],
         AgentSource.Copilot => VsCodeUserDirs().ToList(),
+        AgentSource.Codex => [CodexRoot],
         _ => [],
     };
 
@@ -53,6 +57,9 @@ public static class SessionSources
         Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR") is { Length: > 0 } dir
             ? Path.Combine(dir, "projects")
             : Path.Combine(Home, ".claude", "projects");
+
+    public static string CodexRoot =>
+        Path.Combine(Environment.GetEnvironmentVariable("CODEX_HOME") is { Length: > 0 } dir ? dir : Path.Combine(Home, ".codex"), "sessions");
 
     /// <summary>Most recently modified sessions first.</summary>
     public static IReadOnlyList<FileInfo> FindSessions(AgentSource source, string? root = null, int limit = 20)
@@ -62,6 +69,7 @@ public static class SessionSources
         {
             AgentSource.Claude => roots.SelectMany(r => Enumerate(r, "*.jsonl", SearchOption.AllDirectories)),
             AgentSource.Copilot => roots.SelectMany(CopilotSessionFiles),
+            AgentSource.Codex => roots.SelectMany(r => Enumerate(r, "rollout-*.jsonl", SearchOption.AllDirectories)),
             _ => [],
         };
         return files.OrderByDescending(f => f.LastWriteTimeUtc).Take(limit).ToList();

@@ -111,6 +111,7 @@ public sealed class ClaudeCodeJsonlAdapter : IAgentSourceAdapter
                     if (id is not null && toolIndex.TryGetValue(id, out var tool))
                     {
                         tool.ResultChars = (tool.ResultChars ?? 0) + MeasureResult(block);
+                        tool.ResultTail = Tail(ResultText(block));
                         tool.IsError |= block.TryGetProperty("is_error", out var err) && err.ValueKind == JsonValueKind.True;
                     }
                 }
@@ -171,6 +172,8 @@ public sealed class ClaudeCodeJsonlAdapter : IAgentSourceAdapter
                 Id = id,
                 Name = GetString(block, "name") ?? "unknown",
                 Target = block.TryGetProperty("input", out var input) ? ExtractTarget(input) : null,
+                Range = input.ValueKind == JsonValueKind.Object ? ExtractRange(input) : null,
+                Timestamp = ts,
             };
             toolIndex[id] = tool;
             turn.Tools.Add(tool);
@@ -185,6 +188,16 @@ public sealed class ClaudeCodeJsonlAdapter : IAgentSourceAdapter
         return null;
     }
 
+    /// <summary>"offset=…,limit=…" when a read covers only part of a file.</summary>
+    internal static string? ExtractRange(JsonElement input)
+    {
+        var parts = new List<string>();
+        foreach (var key in new[] { "offset", "limit" })
+            if (input.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number)
+                parts.Add($"{key}={v.GetRawText()}");
+        return parts.Count == 0 ? null : string.Join(',', parts);
+    }
+
     private static int MeasureResult(JsonElement block)
     {
         if (!block.TryGetProperty("content", out var c)) return 0;
@@ -196,6 +209,20 @@ public sealed class ClaudeCodeJsonlAdapter : IAgentSourceAdapter
             _ => c.GetRawText().Length,
         };
     }
+
+    private static string ResultText(JsonElement block)
+    {
+        if (!block.TryGetProperty("content", out var c)) return "";
+        return c.ValueKind switch
+        {
+            JsonValueKind.String => c.GetString() ?? "",
+            JsonValueKind.Array => string.Join("\n", c.EnumerateArray().Select(p => GetString(p, "text")).Where(t => t is not null)),
+            _ => "",
+        };
+    }
+
+    internal static string? Tail(string text, int max = 600) =>
+        text.Length == 0 ? null : text.Length <= max ? text : text[^max..];
 
     private static string? GetString(JsonElement e, string name) =>
         e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String

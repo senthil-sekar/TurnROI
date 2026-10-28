@@ -28,6 +28,14 @@ static int Run(string[] args)
             return ListSessions(opts);
         case "analyze":
             return Analyze(opts);
+        case "profile":
+            return LoadPrices(opts) is { } p1 ? ProfileCommands.Profile(opts, p1) : 1;
+        case "compare":
+            return LoadPrices(opts) is { } p2 ? ProfileCommands.Compare(opts, p2) : 1;
+        case "hook":
+            return Hooks.Run(opts.Target, Console.In, Console.Error);
+        case "hooks":
+            return Hooks.Manage(opts);
         default:
             Console.Error.WriteLine($"error: unknown command '{opts.Command}'");
             return 2;
@@ -86,16 +94,7 @@ static int Analyze(CliArgs opts)
         return 1;
     }
 
-    PriceTable prices;
-    try
-    {
-        prices = opts.PricesFile is null ? PriceTable.LoadDefault() : PriceTable.LoadFile(opts.PricesFile);
-    }
-    catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or InvalidOperationException)
-    {
-        Console.Error.WriteLine($"error: could not load prices: {ex.Message}");
-        return 1;
-    }
+    if (LoadPrices(opts) is not { } prices) return 1;
 
     TurnRoi.Core.Model.AgentSession session;
     try
@@ -108,7 +107,7 @@ static int Analyze(CliArgs opts)
         return 1;
     }
 
-    var report = new SessionAnalyzer(prices).Analyze(session);
+    var report = new SessionAnalyzer(prices, git: opts.NoGit ? null : new GitCliHistory()).Analyze(session);
 
     if (opts.Json)
         JsonReport.Write(Console.Out, report, file.FullName);
@@ -116,4 +115,17 @@ static int Analyze(CliArgs opts)
         ConsoleReport.Write(Console.Out, report, file.FullName, opts.Top, opts.AllTurns, prices.Note);
 
     return 0;
+}
+
+static PriceTable? LoadPrices(CliArgs opts)
+{
+    try
+    {
+        return opts.PricesFile is null ? PriceTable.LoadDefault() : PriceTable.LoadFile(opts.PricesFile);
+    }
+    catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException or InvalidOperationException)
+    {
+        Console.Error.WriteLine($"error: could not load prices: {ex.Message}");
+        return null;
+    }
 }
