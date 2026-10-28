@@ -160,8 +160,10 @@ public sealed record RepoGuidance(
     {
         try
         {
-            var full = Path.GetFullPath(file, repoDir);
-            var rel = Path.GetRelativePath(Path.GetFullPath(repoDir), full);
+            // GetFullPath(path, basePath) requires a fully qualified base, which "/repo" is not on Windows.
+            var root = Path.GetFullPath(repoDir);
+            var full = Path.GetFullPath(Path.Combine(root, file));
+            var rel = Path.GetRelativePath(root, full);
             return rel.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(rel) ? null : rel.Replace('\\', '/');
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException)
