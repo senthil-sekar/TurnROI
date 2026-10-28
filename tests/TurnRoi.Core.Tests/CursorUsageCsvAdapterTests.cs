@@ -16,7 +16,7 @@ public class CursorUsageCsvAdapterTests
         var s = Load();
 
         Assert.Equal(2, s.Turns.Count);
-        Assert.Single(s.Turns[0].Calls, _ => true);
+        Assert.Single(s.Turns[0].Calls);
         Assert.Equal(2, s.Turns[1].Calls.Count);
         Assert.Contains("burst of 2 requests", s.Turns[1].Prompt);
     }
@@ -42,7 +42,7 @@ public class CursorUsageCsvAdapterTests
         Assert.Equal(0.14m, report.TotalCost);
         Assert.Null(report.CorrectedSpend); // no prompts, so no pushback signal
         Assert.Empty(report.UnpricedModels);
-        Assert.True(s.Notes.Any(n => n.Contains("included in your plan")));
+        Assert.Contains(s.Notes, n => n.Contains("included in your plan"));
     }
 
     [Fact]

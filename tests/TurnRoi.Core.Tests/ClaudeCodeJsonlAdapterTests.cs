@@ -77,7 +77,7 @@ public class ClaudeCodeJsonlAdapterTests
             """{"type":"user","message":{"role":"user","content":"<system-reminder>only injected context</system-reminder>"}}""",
         };
 
-        var turn = Assert.Single(new ClaudeCodeJsonlAdapter().Parse(lines).Turns, _ => true);
+        var turn = Assert.Single(new ClaudeCodeJsonlAdapter().Parse(lines).Turns);
 
         Assert.Equal("No, revert that", turn.Prompt);
     }

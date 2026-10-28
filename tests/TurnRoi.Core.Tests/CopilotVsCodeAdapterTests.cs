@@ -24,7 +24,7 @@ public class CopilotVsCodeAdapterTests
     [Fact]
     public void Splits_cached_tokens_out_of_input_from_model_totals()
     {
-        var call = Assert.Single(LoadLog().Turns[0].Calls, _ => true);
+        var call = Assert.Single(LoadLog().Turns[0].Calls);
 
         Assert.Equal("claude-sonnet-4.5", call.Model);
         Assert.Equal(30_000, call.Usage.Input);
@@ -35,7 +35,7 @@ public class CopilotVsCodeAdapterTests
     [Fact]
     public void Falls_back_to_last_call_tokens_and_strips_model_prefix()
     {
-        var call = Assert.Single(LoadLog().Turns[1].Calls, _ => true);
+        var call = Assert.Single(LoadLog().Turns[1].Calls);
 
         Assert.Equal("gpt-4.1", call.Model);
         Assert.Equal(30_000, call.Usage.Input);
@@ -57,9 +57,9 @@ public class CopilotVsCodeAdapterTests
         var s = LoadLog();
 
         Assert.Empty(s.Turns[2].Calls);
-        Assert.True(s.Notes.Any(n => n.Contains("no token data")));
-        Assert.True(s.Notes.Any(n => n.Contains("only record the last model call")));
-        Assert.True(s.Notes.Any(n => n.Contains("API-equivalent")));
+        Assert.Contains(s.Notes, n => n.Contains("no token data"));
+        Assert.Contains(s.Notes, n => n.Contains("only record the last model call"));
+        Assert.Contains(s.Notes, n => n.Contains("API-equivalent"));
     }
 
     [Fact]
@@ -75,7 +75,7 @@ public class CopilotVsCodeAdapterTests
     {
         var s = new CopilotVsCodeAdapter().Read(Fixture("copilot-vscode-snapshot.json"));
 
-        var turn = Assert.Single(s.Turns, _ => true);
+        var turn = Assert.Single(s.Turns);
         Assert.Equal("Explain this regex", turn.Prompt);
         Assert.Equal(5_000, turn.Usage.Input);
     }
