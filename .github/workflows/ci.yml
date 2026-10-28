@@ -18,7 +18,18 @@ jobs:
           dotnet-version: 8.0.x
       - run: dotnet restore
       - run: dotnet build --no-restore -c Release
-      - run: dotnet test --no-build -c Release --verbosity normal
+      - run: dotnet test --no-build -c Release --verbosity normal --logger "trx;LogFileName=results.trx" --results-directory TestResults
+      - name: Report failed tests as annotations
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-ChildItem TestResults -Filter *.trx -Recurse | ForEach-Object {
+            [xml]$trx = Get-Content $_.FullName
+            $trx.TestRun.Results.UnitTestResult | Where-Object { $_.outcome -eq 'Failed' } | ForEach-Object {
+              $msg = ($_.Output.ErrorInfo.Message -replace "`r?`n", ' ')
+              Write-Output "::error title=$($_.testName)::$msg"
+            }
+          }
       - name: Smoke test CLI on every source
         shell: bash
         run: |
