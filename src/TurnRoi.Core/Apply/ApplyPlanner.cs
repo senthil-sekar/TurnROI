@@ -211,7 +211,8 @@ public static class HookConfig
     public static bool IsOurs(JsonNode? entry) =>
         entry?.ToJsonString() is { } json &&
         json.Contains("turnroi", StringComparison.OrdinalIgnoreCase) &&
-        (json.Contains(" hook pre-tool-use", StringComparison.Ordinal) || json.Contains(" hook post-tool-use", StringComparison.Ordinal));
+        (json.Contains(" hook pre-tool-use", StringComparison.Ordinal) || json.Contains(" hook post-tool-use", StringComparison.Ordinal) ||
+         json.Contains(" hook user-prompt", StringComparison.Ordinal));
 
     /// <summary>Claude Code: .claude/settings(.local).json, {"hooks": {"PreToolUse": [{matcher, hooks: [...]}]}}.</summary>
     public static string MergeClaude(string? existing, string command)
@@ -241,7 +242,7 @@ public static class HookConfig
         root["version"] ??= 1;
         var hooks = root["hooks"] as JsonObject ?? new JsonObject();
         root["hooks"] = hooks;
-        foreach (var (evt, sub) in new[] { ("preToolUse", "pre-tool-use"), ("postToolUse", "post-tool-use") })
+        foreach (var (evt, sub) in new[] { ("preToolUse", "pre-tool-use"), ("postToolUse", "post-tool-use"), ("beforeSubmitPrompt", "user-prompt") })
             Replace(hooks, evt).Add((JsonNode)new JsonObject { ["command"] = $"{command} hook {sub} --agent cursor" });
         return root.ToJsonString(Indented) + "\n";
     }
@@ -271,6 +272,7 @@ public static class HookConfig
             {
                 ["PreToolUse"] = new JsonArray(Entry("pre-tool-use")),
                 ["PostToolUse"] = new JsonArray(Entry("post-tool-use")),
+                ["UserPromptSubmit"] = new JsonArray(Entry("user-prompt")),
             },
         };
         return root.ToJsonString(Indented) + "\n";

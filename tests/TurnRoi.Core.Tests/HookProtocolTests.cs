@@ -49,12 +49,26 @@ public class HookProtocolTests
     }
 
     [Fact]
-    public void Claude_and_copilot_answer_on_stderr_with_exit_2()
+    public void Claude_answers_on_stderr_with_exit_2()
     {
-        var o = HookProtocol.Format(TargetAgent.Copilot, HookPhase.PreToolUse, HookDecision.Deny("stop"));
+        var o = HookProtocol.Format(TargetAgent.Claude, HookPhase.PreToolUse, HookDecision.Deny("stop"));
         Assert.Equal("stop", o.Stderr);
         Assert.Equal(2, o.ExitCode);
         Assert.Equal(0, HookProtocol.Format(TargetAgent.Claude, HookPhase.PostToolUse, HookDecision.Allow).ExitCode);
+    }
+
+    [Fact]
+    public void Copilot_answers_with_json_in_both_shapes()
+    {
+        var deny = HookProtocol.Format(TargetAgent.Copilot, HookPhase.PreToolUse, HookDecision.Deny("stop"));
+        var json = JsonNode.Parse(deny.Stdout!)!;
+        Assert.Equal(0, deny.ExitCode);
+        Assert.Equal("deny", (string?)json["permissionDecision"]);
+        Assert.Equal("deny", (string?)json["hookSpecificOutput"]!["permissionDecision"]);
+
+        var post = JsonNode.Parse(HookProtocol.Format(TargetAgent.Copilot, HookPhase.PostToolUse, HookDecision.Tell("filter")).Stdout!)!;
+        Assert.Equal("filter", (string?)post["additionalContext"]);
+        Assert.Equal("{}", HookProtocol.Format(TargetAgent.Copilot, HookPhase.PreToolUse, HookDecision.Allow).Stdout);
     }
 
     [Fact]

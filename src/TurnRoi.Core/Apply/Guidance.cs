@@ -88,9 +88,7 @@ public sealed record RepoGuidance(
             sb.AppendLine();
             foreach (var o in Outlines)
             {
-                sb.AppendLine($"### `{o.Path}` ({o.Lines} lines)");
-                sb.AppendLine();
-                foreach (var (line, text) in o.Entries) sb.AppendLine($"- L{line}: `{text}`");
+                sb.Append(Outline.Section(o));
                 sb.AppendLine();
             }
         }
@@ -238,7 +236,24 @@ public static class Outline
             entries.Add((i + 1, text));
         }
 
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content)))[..8].ToLowerInvariant();
-        return new FileOutline(relativePath, lines.Length, hash, entries);
+        return new FileOutline(relativePath, lines.Length, Hash(content), entries);
+    }
+
+    /// <summary>Short content hash, insensitive to line endings (git may check files out with CRLF on Windows).</summary>
+    public static string Hash(string content) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(content.Replace("\r\n", "\n"))))[..8].ToLowerInvariant();
+
+    public const string SectionStartPrefix = "<!-- turnroi:outline ";
+    public const string SectionEnd = "<!-- turnroi:outline-end -->";
+
+    /// <summary>One file's outline, wrapped in markers that record the file's hash so staleness can be checked.</summary>
+    public static string Section(FileOutline o)
+    {
+        var sb = new StringBuilder();
+        sb.Append(SectionStartPrefix).Append("path=").Append(o.Path).Append(" sha=").Append(o.ContentHash).Append(" -->\n");
+        sb.Append($"### `{o.Path}` ({o.Lines} lines)\n\n");
+        foreach (var (line, text) in o.Entries) sb.Append($"- L{line}: `{text}`\n");
+        sb.Append(SectionEnd).Append('\n');
+        return sb.ToString();
     }
 }

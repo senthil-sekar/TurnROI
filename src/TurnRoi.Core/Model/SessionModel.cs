@@ -28,8 +28,9 @@ public readonly record struct TokenUsage(long Input, long Output, long CacheWrit
 /// </summary>
 /// <param name="BilledCost">Cost as billed by the vendor, when the source records it (e.g. Cursor usage export).
 /// Takes precedence over the price table.</param>
+/// <param name="ReportedCost">Cost the agent itself computed (e.g. OpenCode); used only when the price table doesn't know the model.</param>
 public sealed record LlmCall(string MessageId, string Model, DateTimeOffset? Timestamp, TokenUsage Usage, bool IsSidechain,
-    decimal? BilledCost = null);
+    decimal? BilledCost = null, decimal? ReportedCost = null);
 
 /// <summary>A tool invocation made by the agent, joined with its result when available.</summary>
 public sealed class ToolCall

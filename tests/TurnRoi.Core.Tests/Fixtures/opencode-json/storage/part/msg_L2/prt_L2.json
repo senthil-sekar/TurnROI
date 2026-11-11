@@ -1,0 +1,1 @@
+{"id": "prt_L2", "messageID": "msg_L2", "sessionID": "ses_L", "type": "tool", "tool": "read", "callID": "c9", "state": {"status": "error", "input": {"filePath": "/repo/legacy/missing.cs"}, "error": "not found"}}

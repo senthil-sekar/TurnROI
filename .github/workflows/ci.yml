@@ -12,8 +12,8 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 8.0.x
       - run: dotnet restore
@@ -35,9 +35,21 @@ jobs:
         run: |
           set -e
           cli="dotnet run --project src/TurnRoi.Cli -c Release --no-build --"
-          for f in tests/TurnRoi.Core.Tests/Fixtures/*.json*  tests/TurnRoi.Core.Tests/Fixtures/*.csv; do
+          fx=tests/TurnRoi.Core.Tests/Fixtures
+          export TURNROI_HOME="$RUNNER_TEMP/turnroi-home"
+          for f in $fx/*.json* $fx/*.csv $fx/cursor-user/globalStorage/state.vscdb $fx/opencode-db/opencode.db $fx/copilot-cli/abc-123/events.jsonl; do
             echo "::group::$f"; $cli analyze "$f" --no-git > /dev/null; echo "::endgroup::"
           done
+          $cli analyze $fx/cursor-user/globalStorage/state.vscdb --usage $fx/cursor-usage-local.csv --html "$RUNNER_TEMP/s.html" --no-git > /dev/null
+          $cli sessions --source opencode --root $fx/opencode-json > /dev/null
+          team="$RUNNER_TEMP/team" && mkdir -p "$team"
+          $cli export $fx/claude-code-basic.jsonl --as a --write "$team/a.json" --no-git
+          $cli export $fx/opencode-db/opencode.db --as b --write "$team/b.json" --no-git
+          $cli team "$team" --html "$RUNNER_TEMP/team.html" > /dev/null
+          $cli label $fx/claude-code-basic.jsonl --set 1=wasted --no-git > /dev/null
+          $cli eval --no-git > /dev/null
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            | $cli mcp | grep -q analyze_session
           $cli profile tests/TurnRoi.Core.Tests/Fixtures/claude-code-basic.jsonl --no-git > /dev/null
           $cli hooks print --agent all > /dev/null
           demo="$RUNNER_TEMP/demo" && mkdir -p "$demo"

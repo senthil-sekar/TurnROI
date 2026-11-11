@@ -1,0 +1,4 @@
+# Binary test fixtures (SQLite databases and write-ahead logs) must not be line-ending converted.
+*.db binary
+*.vscdb binary
+*.db-wal binary

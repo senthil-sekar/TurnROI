@@ -17,39 +17,67 @@ public enum AgentSource
 {
     Claude,
     Copilot,
+    CopilotCli,
     Codex,
     Cursor,
+    OpenCode,
+    Otel,
 }
 
-/// <summary>Finds session files on this machine and picks the adapter that reads them.</summary>
+/// <summary>A session somewhere on disk: a file, or a record inside a database or export file.</summary>
+/// <param name="Location">The file holding it (a transcript, a database, a CSV or an OTLP export).</param>
+public sealed record SessionRef(AgentSource Source, string Id, string Location, DateTimeOffset Modified, long? Size = null,
+    string? Folder = null, string? Title = null);
+
+/// <summary>Finds sessions on this machine and reads them with the right adapter.</summary>
 public static class SessionSources
 {
     private static readonly string Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
+    /// <summary>claude, copilot, copilot-cli, codex, cursor, opencode, otel (case and dashes ignored).</summary>
+    public static AgentSource? Parse(string text) =>
+        Enum.TryParse<AgentSource>(text.Replace("-", "").Replace("_", ""), ignoreCase: true, out var s) ? s : null;
+
+    public static string Label(AgentSource source) => source switch
+    {
+        AgentSource.CopilotCli => "copilot-cli",
+        _ => source.ToString().ToLowerInvariant(),
+    };
+
+    /// <summary>The adapter for file-per-session sources.</summary>
     public static IAgentSourceAdapter AdapterFor(AgentSource source) => source switch
     {
         AgentSource.Claude => new ClaudeCodeJsonlAdapter(),
         AgentSource.Copilot => new CopilotVsCodeAdapter(),
+        AgentSource.CopilotCli => new CopilotCliAdapter(),
         AgentSource.Codex => new CodexRolloutAdapter(),
         AgentSource.Cursor => new CursorUsageCsvAdapter(),
-        _ => throw new ArgumentOutOfRangeException(nameof(source)),
+        AgentSource.Otel => new OtelFileAdapter(),
+        _ => throw new ArgumentOutOfRangeException(nameof(source), $"{source} sessions are read through {nameof(Read)}"),
     };
 
-    /// <summary>Picks a source from the file itself: Cursor CSV, Codex rollout, Copilot chat session, else Claude Code transcript.</summary>
+    /// <summary>Picks a source from the file itself.</summary>
     public static AgentSource Detect(string path)
     {
         if (new CursorUsageCsvAdapter().CanRead(path)) return AgentSource.Cursor;
+        if (path.EndsWith(".vscdb", StringComparison.OrdinalIgnoreCase)) return AgentSource.Cursor;
+        if (Path.GetFileName(path).Equals("opencode.db", StringComparison.OrdinalIgnoreCase)) return AgentSource.OpenCode;
+        if (new OtelFileAdapter().CanRead(path)) return AgentSource.Otel;
         if (new CodexRolloutAdapter().CanRead(path)) return AgentSource.Codex;
+        if (new CopilotCliAdapter().CanRead(path)) return AgentSource.CopilotCli;
         if (new CopilotVsCodeAdapter().CanRead(path)) return AgentSource.Copilot;
         return AgentSource.Claude;
     }
 
-    /// <summary>Default directories each source keeps its sessions in. Cursor has none: its data comes from a CSV export.</summary>
+    /// <summary>Default places each source keeps its sessions. OTel exports have none: pass the file.</summary>
     public static IReadOnlyList<string> DefaultRoots(AgentSource source) => source switch
     {
         AgentSource.Claude => [ClaudeRoot],
         AgentSource.Copilot => VsCodeUserDirs().ToList(),
+        AgentSource.CopilotCli => [CopilotCliRoot],
         AgentSource.Codex => [CodexRoot],
+        AgentSource.Cursor => [CursorLocalStore.DefaultUserDir],
+        AgentSource.OpenCode => [OpenCodeStore.DefaultRoot],
         _ => [],
     };
 
@@ -61,7 +89,10 @@ public static class SessionSources
     public static string CodexRoot =>
         Path.Combine(Environment.GetEnvironmentVariable("CODEX_HOME") is { Length: > 0 } dir ? dir : Path.Combine(Home, ".codex"), "sessions");
 
-    /// <summary>Most recently modified sessions first.</summary>
+    public static string CopilotCliRoot =>
+        Path.Combine(Environment.GetEnvironmentVariable("COPILOT_HOME") is { Length: > 0 } dir ? dir : Path.Combine(Home, ".copilot"), "session-state");
+
+    /// <summary>Session files of file-per-session sources, most recently modified first.</summary>
     public static IReadOnlyList<FileInfo> FindSessions(AgentSource source, string? root = null, int limit = 20)
     {
         var roots = root is null ? DefaultRoots(source) : [root];
@@ -69,21 +100,85 @@ public static class SessionSources
         {
             AgentSource.Claude => roots.SelectMany(r => Enumerate(r, "*.jsonl", SearchOption.AllDirectories)),
             AgentSource.Copilot => roots.SelectMany(CopilotSessionFiles),
+            AgentSource.CopilotCli => roots.SelectMany(r => Enumerate(r, "events.jsonl", SearchOption.AllDirectories)),
             AgentSource.Codex => roots.SelectMany(r => Enumerate(r, "rollout-*.jsonl", SearchOption.AllDirectories)),
             _ => [],
         };
         return files.OrderByDescending(f => f.LastWriteTimeUtc).Take(limit).ToList();
     }
 
-    /// <summary>Resolves a file path, a session id (prefix), or "latest" to a session file.</summary>
-    public static FileInfo? Resolve(AgentSource source, string pathOrId, string? root = null)
+    /// <summary>Sessions of any source, most recent first.</summary>
+    public static IReadOnlyList<SessionRef> List(AgentSource source, string? root = null, int limit = 20)
     {
-        if (File.Exists(pathOrId)) return new FileInfo(pathOrId);
-        if (pathOrId.Equals("latest", StringComparison.OrdinalIgnoreCase))
-            return FindSessions(source, root, 1).FirstOrDefault();
-        return FindSessions(source, root, int.MaxValue)
-            .FirstOrDefault(f => f.Name.StartsWith(pathOrId, StringComparison.OrdinalIgnoreCase));
+        switch (source)
+        {
+            case AgentSource.Cursor:
+            {
+                if (root is not null && root.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) && File.Exists(root))
+                    return [new SessionRef(source, Path.GetFileNameWithoutExtension(root), root, File.GetLastWriteTime(root), new FileInfo(root).Length, Title: "usage export")];
+                var store = new CursorLocalStore(root);
+                if (!store.Exists) return [];
+                return store.List(limit).Select(c => new SessionRef(source, c.Id, store.DatabasePath,
+                    c.Updated ?? DateTimeOffset.MinValue, c.Messages, c.Folder, c.Name)).ToList();
+            }
+            case AgentSource.OpenCode:
+            {
+                var store = new OpenCodeStore(root);
+                if (!store.Exists) return [];
+                return store.List(limit).Select(s => new SessionRef(source, s.Id, root ?? OpenCodeStore.DefaultRoot,
+                    s.Updated ?? DateTimeOffset.MinValue, null, s.Folder, s.Title)).ToList();
+            }
+            case AgentSource.Otel:
+            {
+                if (root is null || !File.Exists(root)) return [];
+                return new OtelFileAdapter().List(root).Take(limit).Select(s => new SessionRef(source, s.Id, root,
+                    s.Ended ?? s.Started ?? DateTimeOffset.MinValue, s.Turns, s.Folder)).ToList();
+            }
+            default:
+                return FindSessions(source, root, limit).Select(f => new SessionRef(source,
+                    source == AgentSource.CopilotCli ? f.Directory?.Name ?? f.Name : Path.GetFileNameWithoutExtension(f.Name),
+                    f.FullName, f.LastWriteTime, f.Length, FolderOf(source, f))).ToList();
+        }
     }
+
+    /// <summary>Reads a session. For Cursor chats, <paramref name="usageCsv"/> adds billed cost from the dashboard export.</summary>
+    public static AgentSession Read(SessionRef r, string? usageCsv = null) => r.Source switch
+    {
+        AgentSource.Cursor when r.Location.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) => new CursorUsageCsvAdapter().Read(r.Location),
+        AgentSource.Cursor => new CursorLocalStore(r.Location).Read(r.Id,
+            usageCsv is null ? null : new CursorUsageCsvAdapter().Read(usageCsv).Turns.SelectMany(t => t.Calls).ToList()),
+        AgentSource.OpenCode => new OpenCodeStore(r.Location).Read(r.Id),
+        AgentSource.Otel => new OtelFileAdapter().Read(r.Location, r.Id),
+        _ => AdapterFor(r.Source).Read(r.Location),
+    };
+
+    /// <summary>Resolves a file path, a session id (prefix), or "latest".</summary>
+    public static SessionRef? Resolve(AgentSource source, string pathOrId, string? root = null)
+    {
+        if (File.Exists(pathOrId))
+        {
+            var full = Path.GetFullPath(pathOrId);
+            return source switch
+            {
+                AgentSource.Cursor when full.EndsWith(".csv", StringComparison.OrdinalIgnoreCase) => List(source, full, 1).FirstOrDefault(),
+                AgentSource.Cursor or AgentSource.OpenCode or AgentSource.Otel => List(source, full, 1).FirstOrDefault(),
+                _ => new SessionRef(source, Path.GetFileNameWithoutExtension(full), full, File.GetLastWriteTime(full), new FileInfo(full).Length),
+            };
+        }
+        if (pathOrId.Equals("latest", StringComparison.OrdinalIgnoreCase))
+            return List(source, root, 1).FirstOrDefault();
+        return List(source, root, int.MaxValue)
+            .FirstOrDefault(s => s.Id.StartsWith(pathOrId, StringComparison.OrdinalIgnoreCase) ||
+                                 Path.GetFileName(s.Location).StartsWith(pathOrId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string? FolderOf(AgentSource source, FileInfo f) => source switch
+    {
+        // Copilot: <User>/workspaceStorage/<hash>/chatSessions/<id>.jsonl — the hash folder identifies the workspace.
+        AgentSource.Copilot => f.Directory?.Name == "emptyWindowChatSessions" ? "(no folder)" : f.Directory?.Parent?.Name,
+        AgentSource.CopilotCli => null,
+        _ => f.Directory?.Name,
+    };
 
     /// <summary>VS Code "User" folders for stable, Insiders and VSCodium on this OS.</summary>
     private static IEnumerable<string> VsCodeUserDirs()

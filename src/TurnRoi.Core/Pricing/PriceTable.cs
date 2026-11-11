@@ -33,11 +33,46 @@ public sealed class PriceTable
         Note = note;
     }
 
-    /// <summary>Longest-prefix match. Dots and hyphens are treated alike ("claude-sonnet-4.5" matches "claude-sonnet-4-5").</summary>
+    /// <summary>
+    /// Longest-prefix match on a version boundary. Dots and hyphens are treated alike ("claude-sonnet-4.5" matches
+    /// "claude-sonnet-4-5"), a provider prefix ("anthropic/", "copilot/") is ignored, and the rest of the id may be a
+    /// date ("-20251001") or a variant word ("-thinking", "-codex"), but never another version number: "gpt-5" does
+    /// not price "gpt-5.7", so an unknown model stays unpriced instead of borrowing an older model's price.
+    /// </summary>
     public ModelPrice? Find(string model)
     {
-        var normalized = model.Replace('.', '-');
-        return _byPrefix.FirstOrDefault(p => normalized.StartsWith(p.Key.Replace('.', '-'), StringComparison.OrdinalIgnoreCase)).Value;
+        var id = model.Trim();
+        var slash = id.LastIndexOf('/');
+        if (slash >= 0) id = id[(slash + 1)..];
+        id = id.Replace('.', '-').ToLowerInvariant();
+        // Cursor writes the version first: claude-4.5-sonnet-thinking → claude-sonnet-4-5-thinking.
+        id = CursorStyle.Replace(id, "claude-${family}-${version}");
+
+        foreach (var (key, price) in _byPrefix)
+        {
+            var k = key.Replace('.', '-').ToLowerInvariant();
+            if (!id.StartsWith(k, StringComparison.Ordinal)) continue;
+            if (IsVariantSuffix(id[k.Length..])) return price;
+        }
+        return null;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex CursorStyle = new(
+        @"^claude-(?<version>\d+(?:-\d)?)-(?<family>opus|sonnet|haiku|fable|mythos)(?=$|-)", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static readonly HashSet<string> PricedTiers = new(StringComparer.Ordinal)
+        { "pro", "mini", "nano", "micro", "lite", "small", "large", "max-pro" };
+
+    private static bool IsVariantSuffix(string rest)
+    {
+        if (rest.Length == 0) return true;
+        if (rest[0] is not ('-' or '@' or ':' or '_')) return false;
+        var next = rest[1..];
+        if (next.Length == 0) return true;
+        if (!char.IsDigit(next[0]))                                   // -thinking, -codex, -latest
+            return !PricedTiers.Contains(next.Split('-', '_', ':')[0]);   // but -pro/-mini/-nano are their own prices
+        var digits = next.TakeWhile(char.IsDigit).Count();
+        return digits >= 6;                                           // a date like 20251001, not a version like 5 or 1
     }
 
     /// <summary>Cost of a set of calls; null if any call's model is unpriced.</summary>
@@ -48,6 +83,7 @@ public sealed class PriceTable
         {
             if (c.BilledCost is { } billed) { total += billed; continue; }
             var price = Find(c.Model);
+            if (price is null && c.ReportedCost is { } reported) { total += reported; continue; }
             if (price is null) return null;
             total += price.Cost(c.Usage);
         }
@@ -55,7 +91,7 @@ public sealed class PriceTable
     }
 
     public IEnumerable<string> UnpricedModels(IEnumerable<LlmCall> calls) =>
-        calls.Where(c => c.BilledCost is null && Find(c.Model) is null).Select(c => c.Model).Distinct();
+        calls.Where(c => c.BilledCost is null && c.ReportedCost is null && Find(c.Model) is null).Select(c => c.Model).Distinct();
 
     public static PriceTable LoadDefault()
     {

@@ -1,0 +1,12 @@
+{"type": "session.start", "data": {"sessionId": "abc-123", "copilotVersion": "1.0", "context": {"cwd": "/repo/claims-api"}}, "id": "e0", "timestamp": "2026-11-01T09:00:00.000Z", "parentId": null}
+{"type": "session.model_change", "data": {"newModel": "claude-sonnet-4.5"}, "id": "e1", "timestamp": "2026-11-01T09:00:01.000Z", "parentId": null}
+{"type": "user.message", "data": {"content": "Add a regression test for refunds"}, "id": "e2", "timestamp": "2026-11-01T09:00:02.000Z", "parentId": null}
+{"type": "assistant.message", "data": {"content": "Looking", "outputTokens": 100, "toolRequests": [{"toolCallId": "tc1", "name": "view", "arguments": {"path": "/repo/claims-api/src/Refund.cs"}}]}, "id": "e3", "timestamp": "2026-11-01T09:00:03.000Z", "parentId": null}
+{"type": "tool.execution_start", "data": {"toolCallId": "tc1", "toolName": "view", "arguments": {"path": "/repo/claims-api/src/Refund.cs"}}, "id": "e4", "timestamp": "2026-11-01T09:00:04.000Z", "parentId": null}
+{"type": "tool.execution_complete", "data": {"toolCallId": "tc1", "success": true, "result": {"content": "class Refund {}"}}, "id": "e5", "timestamp": "2026-11-01T09:00:05.000Z", "parentId": null}
+{"type": "assistant.message", "data": {"content": "", "outputTokens": 300, "toolRequests": [{"toolCallId": "tc2", "name": "create", "arguments": {"path": "/repo/claims-api/tests/RefundTests.cs"}}]}, "id": "e6", "timestamp": "2026-11-01T09:00:06.000Z", "parentId": null}
+{"type": "tool.execution_complete", "data": {"toolCallId": "tc2", "success": true, "result": {"content": "Created"}}, "id": "e7", "timestamp": "2026-11-01T09:00:07.000Z", "parentId": null}
+{"type": "assistant.message", "data": {"content": "", "outputTokens": 100, "toolRequests": [{"toolCallId": "tc3", "name": "bash", "arguments": {"command": "dotnet test"}}]}, "id": "e8", "timestamp": "2026-11-01T09:00:08.000Z", "parentId": null}
+{"type": "tool.execution_complete", "data": {"toolCallId": "tc3", "success": true, "result": {"content": "Passed!  - Failed:     0, Passed:    43"}}, "id": "e9", "timestamp": "2026-11-01T09:00:09.000Z", "parentId": null}
+{"type": "session.shutdown", "data": {"modelMetrics": {"claude-sonnet-4.5": {"usage": {"inputTokens": 50000, "outputTokens": 500, "cacheReadTokens": 40000, "cacheWriteTokens": 5000}, "requests": {"count": 3, "cost": 3}}}}, "id": "e10", "timestamp": "2026-11-01T09:00:10.000Z", "parentId": null}
+garbage

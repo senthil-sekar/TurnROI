@@ -12,6 +12,8 @@ internal static class ProfileCommands
     {
         var projectDir = Path.GetFullPath(opts.ProjectDir ?? Directory.GetCurrentDirectory());
         if (opts.Undo) return Undo(projectDir);
+        if (opts.Check) return CheckFreshness(projectDir);
+        if (opts.Refresh) return RefreshOutlines(projectDir);
 
         // When applying, learn only from sessions that ran in this project (unless --project says otherwise).
         var explicitFile = opts.Target is { } targetFile && File.Exists(targetFile);
@@ -61,6 +63,12 @@ internal static class ProfileCommands
             File.WriteAllText(opts.WritePath, profile.ToMarkdown($"TurnROI waste profile ({scope})"));
             w.WriteLine();
             w.WriteLine($"Wrote {opts.WritePath}.");
+        }
+
+        if (opts.HtmlPath is not null)
+        {
+            File.WriteAllText(opts.HtmlPath, HtmlReport.Profile(profile, scope));
+            w.WriteLine($"Wrote {opts.HtmlPath}.");
         }
 
         if (opts.Apply) return ApplyGuidance(opts, profile, projectDir);
@@ -145,6 +153,47 @@ internal static class ProfileCommands
         _ => null,
     };
 
+    private static int CheckFreshness(string projectDir)
+    {
+        var statuses = SkillFreshness.Check(projectDir);
+        if (statuses.Count == 0)
+        {
+            Console.WriteLine("No TurnROI skill outlines found. Create them with: turnroi profile --apply");
+            return 0;
+        }
+        var stale = statuses.Where(s => s.State != OutlineState.Fresh).ToList();
+        var t = new TextTable("Skill", "File", "State").AlignRight();
+        foreach (var s in statuses)
+            t.Add(Path.GetRelativePath(projectDir, s.SkillFile), s.FilePath, s.State switch
+            {
+                OutlineState.Fresh => "fresh",
+                OutlineState.Stale => Ansi.Yellow("stale"),
+                _ => Ansi.Yellow("file missing"),
+            });
+        t.Write(Console.Out, "  ");
+        if (stale.Count == 0)
+        {
+            Console.WriteLine(Ansi.Green("All outlines match their files."));
+            return 0;
+        }
+        Console.WriteLine($"{stale.Count} outline(s) out of date. Update them with: turnroi profile --refresh");
+        return 1;
+    }
+
+    private static int RefreshOutlines(string projectDir)
+    {
+        var changes = SkillFreshness.PlanRefresh(projectDir, GitCliHistory.Head(projectDir));
+        if (changes.Count == 0)
+        {
+            Console.WriteLine("Outlines are up to date.");
+            return 0;
+        }
+        ApplyRunner.Apply(projectDir, changes);
+        foreach (var c in changes) Console.WriteLine($"updated {Path.GetRelativePath(projectDir, c.Path)}");
+        Console.WriteLine(Ansi.Green("Refreshed stale outlines. Undo with: turnroi profile --undo"));
+        return 0;
+    }
+
     private static int Undo(string projectDir)
     {
         var restored = ApplyRunner.Undo(projectDir);
@@ -199,39 +248,47 @@ internal static class ProfileCommands
         return 0;
     }
 
-    private static List<SessionReport> Load(CliArgs opts, PriceTable prices, out string? error, string? underDir = null)
+    internal static List<SessionReport> Load(CliArgs opts, PriceTable prices, out string? error, string? underDir = null)
     {
         error = null;
         var source = opts.Source ?? (opts.Target is { } f && File.Exists(f) ? SessionSources.Detect(f) : AgentSource.Claude);
-        IReadOnlyList<FileInfo> files = opts.Target is { } t && File.Exists(t)
-            ? [new FileInfo(t)]
-            : SessionSources.FindSessions(source, opts.Root, opts.LimitSet ? opts.Limit : 100);
-
-        if (files.Count == 0)
+        IReadOnlyList<SessionRef> refs;
+        try
         {
-            error = source == AgentSource.Cursor
-                ? "error: pass the Cursor usage CSV: turnroi profile <usage.csv>"
-                : $"error: no {source} sessions found.";
+            refs = opts.Target is { } t && File.Exists(t)
+                ? source is AgentSource.Cursor or AgentSource.OpenCode or AgentSource.Otel && !t.EndsWith(".csv", StringComparison.OrdinalIgnoreCase)
+                    ? SessionSources.List(source, Path.GetFullPath(t), opts.LimitSet ? opts.Limit : 100)
+                    : SessionSources.Resolve(source, t) is { } one ? [one] : []
+                : SessionSources.List(source, opts.Root, opts.LimitSet ? opts.Limit : 100);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or NotSupportedException or UnauthorizedAccessException)
+        {
+            error = $"error: could not read {SessionSources.Label(source)} sessions: {ex.Message}";
+            return [];
+        }
+
+        if (refs.Count == 0)
+        {
+            error = $"error: no {SessionSources.Label(source)} sessions found.";
             return [];
         }
 
         var analyzer = new SessionAnalyzer(prices, git: opts.NoGit ? null : new GitCliHistory());
-        var adapter = SessionSources.AdapterFor(source);
         var reports = new List<SessionReport>();
-        foreach (var file in files)
+        foreach (var r in refs)
         {
             try
             {
-                var session = adapter.Read(file.FullName);
+                var session = SessionSources.Read(r, opts.UsageCsv);
                 if (opts.Project is { } p && !(session.Cwd ?? "").Contains(p, StringComparison.OrdinalIgnoreCase)) continue;
                 if (underDir is not null && session.Cwd is { } cwd && !IsUnder(cwd, underDir)) continue;
                 var report = analyzer.Analyze(session);
                 if (opts.Since is { } since && Start(report) < since) continue;
-                if (report.Turns.Any(x => x.Turn.Calls.Count > 0)) reports.Add(report);
+                if (report.Turns.Any(x => x.Turn.Calls.Count > 0 || x.Turn.Tools.Count > 0)) reports.Add(report);
             }
-            catch (Exception ex) when (ex is IOException or FormatException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is IOException or FormatException or UnauthorizedAccessException or InvalidDataException or NotSupportedException or KeyNotFoundException)
             {
-                Console.Error.WriteLine(Ansi.Yellow($"skipped {file.Name}: {ex.Message}"));
+                Console.Error.WriteLine(Ansi.Yellow($"skipped {r.Id}: {ex.Message}"));
             }
         }
 

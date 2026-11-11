@@ -32,10 +32,24 @@ static int Run(string[] args)
             return LoadPrices(opts) is { } p1 ? ProfileCommands.Profile(opts, p1) : 1;
         case "compare":
             return LoadPrices(opts) is { } p2 ? ProfileCommands.Compare(opts, p2) : 1;
+        case "savings":
+            return LoadPrices(opts) is { } p3 ? SavingsCommand.Run(opts, p3) : 1;
         case "hook":
             return Hooks.Run(opts.Target, opts.Agents.Count > 0 ? opts.Agents[0] : null, Console.In, Console.Out, Console.Error);
         case "hooks":
             return Hooks.Manage(opts);
+        case "bench":
+            return LoadPrices(opts) is { } p4 ? BenchCommand.Run(opts, p4) : 1;
+        case "export":
+            return LoadPrices(opts) is { } p5 ? TeamCommands.Export(opts, p5) : 1;
+        case "team":
+            return TeamCommands.Team(opts);
+        case "label":
+            return LoadPrices(opts) is { } p6 ? LabelCommands.Label(opts, p6) : 1;
+        case "eval":
+            return LoadPrices(opts) is { } p7 ? LabelCommands.Eval(opts, p7) : 1;
+        case "mcp":
+            return McpServer.Run(Console.In, Console.Out, Run);
         default:
             Console.Error.WriteLine($"error: unknown command '{opts.Command}'");
             return 2;
@@ -44,36 +58,39 @@ static int Run(string[] args)
 
 static int ListSessions(CliArgs opts)
 {
-    var source = opts.Source ?? AgentSource.Claude;
-    if (source == AgentSource.Cursor)
+    var source = opts.Source ?? (opts.Root is { } r && File.Exists(r) ? SessionSources.Detect(r) : AgentSource.Claude);
+    IReadOnlyList<SessionRef> sessions;
+    try
     {
-        Console.Error.WriteLine("Cursor has no local session list. Export your usage CSV from the Cursor dashboard,");
-        Console.Error.WriteLine("then run: turnroi analyze <usage.csv>");
+        sessions = SessionSources.List(source, opts.Root, opts.Limit);
+    }
+    catch (Exception ex) when (ex is IOException or InvalidDataException or NotSupportedException or UnauthorizedAccessException)
+    {
+        Console.Error.WriteLine($"error: could not read {SessionSources.Label(source)} sessions: {ex.Message}");
         return 1;
     }
 
-    var sessions = SessionSources.FindSessions(source, opts.Root, opts.Limit);
     if (sessions.Count == 0)
     {
-        var where = opts.Root ?? string.Join(", ", SessionSources.DefaultRoots(source).DefaultIfEmpty("(no default folder found)"));
-        Console.Error.WriteLine($"No {source} sessions found under {where}");
+        var where = opts.Root ?? string.Join(", ", SessionSources.DefaultRoots(source).DefaultIfEmpty("(pass the export file with --root)"));
+        Console.Error.WriteLine($"No {SessionSources.Label(source)} sessions found under {where}");
         return 1;
     }
 
-    var table = new TextTable("Modified", "Session", "Folder", "Size").AlignRight(3);
-    foreach (var f in sessions)
-        table.Add(f.LastWriteTime.ToString("yyyy-MM-dd HH:mm"), Path.GetFileNameWithoutExtension(f.Name),
-            ProjectLabel(source, f), $"{f.Length / 1024.0:N0} KB");
+    var table = new TextTable("Modified", "Session", "Folder", "Title");
+    foreach (var s in sessions)
+        table.Add(s.Modified == DateTimeOffset.MinValue ? "-" : s.Modified.ToLocalTime().ToString("yyyy-MM-dd HH:mm"), s.Id,
+            s.Folder is { } f ? Path.GetFileName(Path.TrimEndingDirectorySeparator(f)) is { Length: > 0 } name ? name : f : "",
+            Clip(s.Title ?? "", 50));
     table.Write(Console.Out);
     return 0;
 }
 
-static string ProjectLabel(AgentSource source, FileInfo f) => source switch
+static string Clip(string s, int max)
 {
-    // Copilot: <User>/workspaceStorage/<hash>/chatSessions/<id>.jsonl — the hash folder identifies the workspace.
-    AgentSource.Copilot => f.Directory?.Name == "emptyWindowChatSessions" ? "(no folder)" : f.Directory?.Parent?.Name ?? "",
-    _ => f.Directory?.Name ?? "",
-};
+    var one = string.Join(' ', s.Split((char[])['\n', '\r', '\t'], StringSplitOptions.RemoveEmptyEntries));
+    return one.Length <= max ? one : one[..(max - 1)] + "…";
+}
 
 static int Analyze(CliArgs opts)
 {
@@ -81,16 +98,21 @@ static int Analyze(CliArgs opts)
     var isFile = File.Exists(target);
     var source = opts.Source ?? (isFile ? SessionSources.Detect(target) : AgentSource.Claude);
 
-    if (!isFile && source == AgentSource.Cursor)
+    SessionRef? found;
+    try
     {
-        Console.Error.WriteLine("error: Cursor needs a file: export your usage CSV from the Cursor dashboard and pass its path.");
+        found = SessionSources.Resolve(source, target, opts.Root);
+    }
+    catch (Exception ex) when (ex is IOException or InvalidDataException or NotSupportedException or UnauthorizedAccessException)
+    {
+        Console.Error.WriteLine($"error: could not read {SessionSources.Label(source)} sessions: {ex.Message}");
         return 1;
     }
-
-    var file = SessionSources.Resolve(source, target, opts.Root);
-    if (file is null)
+    if (found is null)
     {
-        Console.Error.WriteLine($"error: no {source} session matching '{target}'. Try 'turnroi sessions --source {source.ToString().ToLowerInvariant()}'.");
+        Console.Error.WriteLine(source == AgentSource.Otel && !isFile
+            ? "error: pass the OpenTelemetry export file (OTLP JSON)."
+            : $"error: no {SessionSources.Label(source)} session matching '{target}'. Try 'turnroi sessions --source {SessionSources.Label(source)}'.");
         return 1;
     }
 
@@ -99,21 +121,27 @@ static int Analyze(CliArgs opts)
     TurnRoi.Core.Model.AgentSession session;
     try
     {
-        session = SessionSources.AdapterFor(source).Read(file.FullName);
+        session = SessionSources.Read(found, opts.UsageCsv);
     }
-    catch (Exception ex) when (ex is FormatException or IOException or UnauthorizedAccessException)
+    catch (Exception ex) when (ex is FormatException or IOException or UnauthorizedAccessException or InvalidDataException or NotSupportedException or KeyNotFoundException)
     {
-        Console.Error.WriteLine($"error: could not read {file.FullName}: {ex.Message}");
+        Console.Error.WriteLine($"error: could not read {found.Location}: {ex.Message}");
         return 1;
     }
 
     var report = new SessionAnalyzer(prices, git: opts.NoGit ? null : new GitCliHistory()).Analyze(session);
+    var label = found.Source is AgentSource.Cursor or AgentSource.OpenCode or AgentSource.Otel ? $"{found.Location} ({found.Id})" : found.Location;
 
     if (opts.Json)
-        JsonReport.Write(Console.Out, report, file.FullName);
+        JsonReport.Write(Console.Out, report, label);
     else
-        ConsoleReport.Write(Console.Out, report, file.FullName, opts.Top, opts.AllTurns, prices.Note);
+        ConsoleReport.Write(Console.Out, report, label, opts.Top, opts.AllTurns, prices.Note);
 
+    if (opts.HtmlPath is not null)
+    {
+        File.WriteAllText(opts.HtmlPath, HtmlReport.Session(report, label));
+        Console.Error.WriteLine($"Wrote {opts.HtmlPath}");
+    }
     return 0;
 }
 

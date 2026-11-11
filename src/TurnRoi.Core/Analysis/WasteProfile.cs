@@ -58,7 +58,9 @@ public sealed record WasteProfile
             .OrderByDescending(f => f.Tokens).ThenByDescending(f => f.Rereads)
             .Take(8).ToList();
 
-        var shellTools = turns.SelectMany(t => t.Turn.Tools).Where(t => ToolKinds.IsShell(t) && t.Target is not null).ToList();
+        // Tool patterns count every turn, including sources without token counts (e.g. Cursor's local chats).
+        var toolTurns = reports.SelectMany(r => r.Turns).Where(t => t.Turn.Tools.Count > 0).ToList();
+        var shellTools = toolTurns.SelectMany(t => t.Turn.Tools).Where(t => ToolKinds.IsShell(t) && t.Target is not null).ToList();
         var noisy = shellTools
             .Where(t => t.EstimatedResultTokens is > 0)
             .GroupBy(t => ToolKinds.CommandLabel(t.Target!))

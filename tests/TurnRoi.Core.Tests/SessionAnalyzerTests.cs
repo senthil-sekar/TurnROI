@@ -60,9 +60,36 @@ public class SessionAnalyzerTests
     [InlineData("Now add logging", false)]
     [InlineData("Notice the null check in Program.cs", false)]
     [InlineData("Looks good, ship it", false)]
+    [InlineData("nope", true)]
+    [InlineData("No. Use the existing helper", true)]
+    [InlineData("Stop. You're editing the wrong file", true)]
+    [InlineData("stop changing the tests", true)]
+    [InlineData("Wait, that's not what I asked for", true)]
+    [InlineData("The build doesn't compile anymore", true)]
+    [InlineData("You deleted the null check", true)]
+    [InlineData("I said only the controller", true)]
+    [InlineData("please don't touch the migrations", true)]
+    [InlineData("Same error as before", true)]
+    [InlineData("this is still broken", true)]
+    [InlineData("No worries, now add logging", false)]
+    [InlineData("No need to add tests for that", false)]
+    [InlineData("No tests exist for RefundService yet, add some", false)]
+    [InlineData("Stop the dev server and run the migrations", false)]
+    [InlineData("nope, looks good", false)]
+    [InlineData("Undocumented APIs: list them", false)]
+    [InlineData("Wrap the call in a retry", false)]
     public void Detects_pushback_prompts(string prompt, bool expected)
     {
         Assert.Equal(expected, SessionAnalyzer.IsCorrection(prompt));
+    }
+
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    public void A_pasted_build_error_is_pushback_only_after_an_edit(bool previousEdited, bool expected)
+    {
+        const string paste = "src/Claims.cs(12,5): error CS1002: ; expected\nBuild FAILED.";
+        Assert.Equal(expected, SessionAnalyzer.IsCorrection(paste, previousEdited));
     }
 
     [Fact]

@@ -7,13 +7,17 @@ How TurnROI reads agent sessions, judges turns, and acts on what it finds. The [
 ```
 src/TurnRoi.Core            Library, no dependencies beyond the .NET base library
   Model/                    AgentSession → Turn → LlmCall / ToolCall, TokenUsage
-  Adapters/                 One adapter per agent + SessionSources (discovery, auto-detection)
-  Pricing/                  Embedded price table (prices.json), longest-prefix model matching
-  Analysis/                 SessionAnalyzer (findings), Outcomes (ROI), ToolKinds, WasteProfile
-  Guardrails/               GuardrailEngine (decisions), HookProtocol (per-agent payloads/answers), ReadLedger
-  Apply/                    RepoGuidance (rules, skill, tuned settings), ApplyPlanner (per-agent files), ApplyRunner (backup/undo)
-src/TurnRoi.Cli             `turnroi` dotnet tool: argument parsing, console/JSON reports, hook I/O
-tests/TurnRoi.Core.Tests    xUnit tests; Fixtures/ holds one synthetic session per agent
+  Adapters/                 One adapter or store per agent + SessionSources (discovery, auto-detection)
+  Storage/                  SqliteReader: read-only SQLite (with WAL) in pure C#, for Cursor and OpenCode
+  Pricing/                  Embedded price table (prices.json), version-aware model matching
+  Analysis/                 SessionAnalyzer (findings), Pushback, Outcomes (ROI), ToolKinds, WasteProfile
+  Guardrails/               GuardrailEngine, HookProtocol (per-agent payloads/answers), ReadLedger, InterventionLog
+  Apply/                    RepoGuidance (rules, skill, settings), ApplyPlanner, ApplyRunner (backup/undo), SkillFreshness
+  Bench/                    BenchSuite, BenchRunner (variants × tasks in fresh repo copies), Shell
+  Team/                     TeamExport (numbers-only summaries), TeamRollup
+  Evaluation/               TurnLabel, LabelStore, Evaluator (precision/recall against hand labels)
+src/TurnRoi.Cli             `turnroi` dotnet tool: arguments, console/JSON/HTML reports, hook I/O, MCP server
+tests/TurnRoi.Core.Tests    xUnit tests; Fixtures/ holds synthetic sessions (tests/fixture-generator/generate.py)
 ```
 
 Principles:
@@ -27,15 +31,15 @@ Principles:
 
 | Type | Meaning |
 |---|---|
-| `AgentSession` | One session file. Carries `Source`, `Cwd`, `SkippedLines`, source caveats in `Notes`, and `HasPrompts` (false for Cursor). |
+| `AgentSession` | One session file. Carries `Source`, `Cwd`, `SkippedLines`, source caveats in `Notes`, and `HasPrompts` (false for Cursor's usage CSV). |
 | `Turn` | One human prompt plus everything the agent did before the next prompt. |
-| `LlmCall` | One model call: model, `TokenUsage`, optional `BilledCost` (which overrides the price table). For Copilot, it is one model's total for the turn. |
+| `LlmCall` | One model call: model, `TokenUsage`, optional `BilledCost` (overrides the price table) and `ReportedCost` (used when the model isn't priced). For Copilot, it is one model's total for the turn. |
 | `ToolCall` | Name, `Target` (file path or shell command), `Range` (partial reads), result size, `ResultTail` (last 600 chars, used to read test results), `IsError`, timestamp. |
 | `TokenUsage` | `Input` (uncached), `CacheWrite`, `CacheRead`, `Output`. Context = input + cache write + cache read. |
 
 ## Adapters
 
-Every format below is internal to its vendor and undocumented, so each parser is tolerant: unknown line types are ignored and unparseable lines are counted. `SessionSources.Detect` picks the adapter from the file itself (Cursor CSV → Codex rollout → Copilot session → Claude Code).
+Every format below is internal to its vendor and undocumented, so each parser is tolerant: unknown line types are ignored and unparseable lines are counted. `SessionSources.Detect` picks the adapter from the file itself (Cursor CSV or `.vscdb` → `opencode.db` → OTLP JSON → Codex rollout → Copilot CLI → Copilot → Claude Code). `SessionSources.List/Resolve/Read` work with a `SessionRef` (source, id, location), so file-per-session sources and database-backed ones (Cursor, OpenCode, OTel exports) are handled alike.
 
 ### Claude Code
 
@@ -68,19 +72,38 @@ Every format below is internal to its vendor and undocumented, so each parser is
 
 ### Cursor
 
-Cursor keeps chats in SQLite (`state.vscdb`, table `cursorDiskKV`, keys `composerData:*` and `bubbleId:*`), but recent builds write zero for per-message `tokenCount`, so local data can't attribute spend. TurnROI reads the **usage CSV export** from the Cursor dashboard instead.
+Two sources, which can be combined:
 
-- Columns are matched loosely by name: Date, Model, `Input (w/o Cache Write)`, `Input (w/ Cache Write)`, Cache Read, Output, Total, Cost. Thousands separators and quoted fields are handled.
-- The two input columns are read as separate amounts unless a row's Total only adds up with "with" as a superset. In that case, cache writes are derived from the difference.
-- `Cost` is used as billed. Non-numeric values such as "Included" count as $0, with a note.
-- There are no prompts, so turns are approximated as bursts of requests less than 2 minutes apart. Pushback and outcome detection are off.
+- **Local chats** in `<User>/globalStorage/state.vscdb` (`~/.config/Cursor/User`, `~/Library/Application Support/Cursor/User`, `%APPDATA%\Cursor\User`). Table `cursorDiskKV`: `composerData:<id>` holds the chat (`fullConversationHeadersOnly` lists bubble ids in order; older chats inline a `conversation` array), and `bubbleId:<chat>:<bubble>` holds each message (`type` 1 = user, 2 = assistant; `text`; `toolFormerData` with `name`, `params`, `result`, `status`). The project folder comes from `composer.composerHeaders` (global) or each workspace's `composer.composerData` plus `workspace.json`. Prompts, tools, targets, output sizes and exit codes are all there. Recent builds write zero in `tokenCount`, so tokens usually aren't.
+- **Usage CSV** from the Cursor dashboard: tokens and billed cost per request, no prompts or tools. Columns are matched loosely by name; the two input columns are read as separate amounts unless the row's Total only adds up with "with cache write" as a superset. Non-numeric cost ("Included") counts as $0, with a note. Alone, turns are bursts of requests less than 2 minutes apart, and outcomes are unknown.
+
+`turnroi analyze <chat> --source cursor --usage usage.csv` joins them: each CSV row is assigned to the turn whose time window (prompt until the next prompt, the last one ending 10 minutes after its last message) contains it. Concurrent chats can be mixed together; the report says so.
+
+### OpenCode
+
+`~/.local/share/opencode/opencode.db` (or `$XDG_DATA_HOME/opencode`): tables `session`, `message`, `part`, each with a JSON `data` column merged with its plain columns. Older versions keep the same objects as JSON files under `storage/`. User messages' text parts (minus `synthetic` ones) start turns. Assistant messages carry `tokens{input, output, reasoning, cache{read, write}}` (reasoning counts as output), `modelID` and `cost`; `cost` is used when the model isn't in the price table. Tool parts give `tool`, `state.input`, `state.output`, `state.status` and `metadata.exit`.
+
+### GitHub Copilot CLI
+
+`~/.copilot/session-state/<id>/events.jsonl` (or `$COPILOT_HOME`): `{type, data, timestamp}` per line. `session.start` (cwd), `session.model_change`, `user.message` (turn), `assistant.message` (`toolRequests`, `outputTokens`), `tool.execution_start/complete` (`success`, `result.content`). When per-call `assistant.usage` events exist they are used; otherwise `session.shutdown.modelMetrics` session totals are spread over each model's responses in proportion to output tokens, with a note. Cached tokens are subtracted from input only when they fit inside it (OpenAI-style counts include them; Anthropic-style don't).
+
+### OpenTelemetry exports
+
+OTLP JSON files (one document, or one per line as the file exporter writes them), selected with `--source otel` or detected from `resourceSpans`/`resourceLogs`:
+
+- **GenAI semantic-convention spans**: `gen_ai.operation.name` `chat` spans become calls (`gen_ai.usage.input_tokens` includes cached tokens; `cache_read.input_tokens` and `cache_creation.input_tokens` are taken out), `execute_tool` spans become tools (`gen_ai.tool.name`, arguments for the target). Sessions are `gen_ai.conversation.id`; turns are prompts from `invoke_agent` input messages, or one per trace.
+- **Claude Code log events**: `user_prompt` (turn), `api_request` (`input_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `output_tokens`, `cost_usd`), `tool_result` (`name`, `success`, `tool_result_size_bytes`), grouped by `session.id`.
+
+### SQLite without a dependency
+
+`Storage/SqliteReader` reads SQLite files directly: header, b-tree pages (table and index, interior and leaf), overflow chains, record decoding, the schema from `sqlite_master`, and the WAL (only frames up to the last commit whose salts and cumulative checksums verify). Key-prefix lookups use the matching index (including `UNIQUE` auto-indexes) with a range scan, falling back to a full scan. It opens files read-only with sharing, so Cursor can keep running. UTF-8 databases only.
 
 ### Adding an agent
 
 1. Implement `IAgentSourceAdapter` (`Name`, `CanRead`, `Read`) producing an `AgentSession`.
-2. Add an `AgentSource` value, and wire it into `SessionSources` (`AdapterFor`, `Detect`, `DefaultRoots`, `FindSessions`).
+2. Add an `AgentSource` value, and wire it into `SessionSources` (`Parse`, `AdapterFor` or `Read`, `Detect`, `DefaultRoots`, `List`). Sources kept in a database get a store class like `CursorLocalStore` instead of a file adapter.
 3. If the agent's tool names are new, teach `ToolKinds` which ones read, edit or run shell commands.
-4. Add a **synthetic** fixture to `tests/TurnRoi.Core.Tests/Fixtures` and adapter tests. Never commit real transcripts.
+4. Add a **synthetic** fixture (binary ones via `tests/fixture-generator/generate.py`) and adapter tests. Never commit real transcripts.
 
 ## Findings
 
@@ -91,8 +114,10 @@ Cursor keeps chats in SQLite (`state.vscdb`, table `cursorDiskKV`, keys `compose
 | RepeatedRead (R) | The same file and range is read again with no edit to that file in between |
 | OversizedToolResult (O) | Tool output ≥ 5k estimated tokens; ≥ 20k is high severity |
 | LowCacheHit (C) | From the second turn on, a turn with ≥ 20k context tokens and < 50% from cache |
-| CorrectedNextTurn (X) | The next prompt starts with pushback: no, wrong, revert, undo, stop, "that didn't work", "still failing", "[Request interrupted by user", … |
+| CorrectedNextTurn (X) | The next prompt pushes back (`Pushback.Detect`, below) |
 | ToolErrors (E) | 3 or more failed tool calls in a turn |
+
+**Pushback** looks at the first 200 characters of the next prompt. Openers ("no", "nope", "wrong", "revert", "undo", "stop doing…", "wait,", an interruption) and phrases anywhere in that span ("that's not what I asked", "didn't work", "still failing", "same error", "you deleted…", "I said…", "don't touch…", "doesn't compile") count. Polite openers and plain instructions don't ("no worries", "no need to…", "no tests exist for X", "stop the dev server"). A pasted compiler error, stack trace or failing test summary counts only when the previous turn edited code. `turnroi label` and `turnroi eval` measure it against people's judgement.
 
 ## Outcomes (ROI)
 
@@ -143,11 +168,17 @@ Spend per outcome is summed by cost when every call is priced, otherwise by toke
 |---|---|---|---|
 | Config | `.claude/settings(.local).json` | `.github/hooks/turnroi.json` (VS Code agent mode; Copilot CLI/cloud agent read the same file) | `.cursor/hooks.json` (`version: 1`, `preToolUse`/`postToolUse`) |
 | Payload | `tool_name`, `tool_input`, `tool_response`, `transcript_path` | VS Code: Claude-style snake_case; CLI: `toolName`, `toolArgs` (JSON string), `toolResult` | `tool_name`, `tool_input`, `tool_output`, `conversation_id`, `workspace_roots` |
-| Answer | stderr + exit 2 | stderr + exit 2 | JSON on stdout: `{"permission":"allow"\|"deny","agent_message",…}`; post: `{"additional_context":…}` |
+| Answer | stderr + exit 2 | JSON on stdout, exit 0: `permissionDecision`/`permissionDecisionReason`/`additionalContext` plus the same in Claude's `hookSpecificOutput` | JSON on stdout: `{"permission":"allow"\|"deny","agent_message",…}`; post: `{"additional_context":…}` |
+| Turn start | transcript | `UserPromptSubmit` hook | `beforeSubmitPrompt` hook, and `generation_id` changes |
 
 Cursor treats invalid output from a permission hook as a block, so TurnROI always prints a permission, even when it fails internally (it then allows).
 
-Copilot's and Cursor's transcripts aren't parsed by the hooks, so the re-read guard uses a **read ledger**: a small JSON file per agent and conversation in the temp folder. Completed reads are recorded on PostToolUse; edits forget the file. The engine then sees the ledger as a session, so the rule is identical everywhere. (VS Code Copilot also runs hooks from `.claude/settings.json`; a transcript outside `~/.claude` routes those calls to the ledger too.) The turn budget needs token counts, which only Claude Code transcripts provide.
+Copilot's and Cursor's transcripts aren't parsed by the hooks, so the re-read guard uses a **read ledger**: a small JSON file per agent and conversation in the temp folder. Completed reads are recorded on PostToolUse; edits forget the file. The ledger also counts tool calls in the current turn, which resets at the prompt hook (or a new Cursor `generation_id`). The engine sees the ledger as a session, so the rules are identical everywhere.
+
+- **Turn budget** is checked in order: USD, tokens, then tool calls (`turnBudgetToolCalls`, default 100), so every agent has a working budget. Copilot also gets token counts: the hook reads its chat session file (`transcript_path`, or the session id under `chatSessions`).
+- **De-duplication**: VS Code Copilot also runs hooks from `.claude/settings.json`, so the same call can arrive twice. Each `(phase, session, tool_use_id)` is handled once.
+
+**Intervention log.** Every block, nudge and budget warning is appended to `interventions.jsonl` in the data folder (`$TURNROI_HOME`, else the OS local app-data folder `turnroi`), with the rule, target, model and, for blocked re-reads, the tokens avoided (the earlier read's size ÷ 4). `turnroi savings` summarizes it per rule; cost avoided is priced at the model's input rate, a floor, since the content would also have stayed in context for later calls. Set `"logInterventions": false` to turn it off.
 
 ## Apply: rules, skill and settings per agent
 
@@ -156,6 +187,8 @@ Copilot's and Cursor's transcripts aren't parsed by the hooks, so the re-read gu
 - **Rules** (always on, a few lines): quiet ways to run the noisiest commands (≥ 10k tokens of output), "don't re-read unchanged files" when re-reads occurred, "run the tests before finishing" when ≥ 10% of spend was failing or ≥ 30% unverified, and "plan before multi-file changes" when ≥ 15% was wasted.
 - **Skill** `repo-efficiency` (loaded on demand): quiet invocations (`Quiet.For`: `dotnet test --nologo -v q`, `pytest -q`, `npm ci --silent`, …; otherwise `… 2>&1 | tail -n 40`) and outlines of re-read files (`Outline.Of`: type/function declarations or Markdown headings with line numbers, up to 40 entries). Outlines are stamped with the HEAD commit, and the skill tells the agent to search instead of trusting line numbers if the file changed since.
 - **Settings**: `.turnroi.json`, with the turn budget tuned to 4× the median turn once there are ≥ 10 turns.
+
+Each outline sits between `<!-- turnroi:outline path=… sha=… -->` and `<!-- turnroi:outline-end -->`, where `sha` is the first 8 hex of the SHA-256 of the file's content with line endings normalized. `turnroi profile --check` compares those hashes with the files (exit 1 when stale, for CI or a pre-commit hook); `--refresh` rewrites only the stale outlines, drops those of deleted files, and updates the commit note, with the usual backup and undo.
 
 `ApplyPlanner` writes them in each agent's own place:
 
@@ -191,17 +224,42 @@ Ownership rules:
 
 ## Pricing
 
-`prices.json` holds USD per million tokens for input, output, cache write (5-minute) and cache read, keyed by model-id prefix. The longest prefix wins, and dots and hyphens are treated alike (`claude-sonnet-4.5` matches `claude-sonnet-4-5`). A billed cost from the source (Cursor) takes precedence. Unknown models make costs `n/a`; the report lists them so the user can pass `--prices`.
+`prices.json` holds USD per million tokens for input, output, cache write (5-minute) and cache read, keyed by model id. Matching ignores a provider prefix (`anthropic/`), treats dots and hyphens alike, and rewrites Cursor's version-first names (`claude-4.5-sonnet-thinking` → `claude-sonnet-4-5-thinking`). The longest key wins only if what follows it is nothing, a date, or a word variant (`-thinking`, `-codex`, `-latest`); a further version number or a separately priced tier (`-pro`, `-mini`, …) doesn't match, so a new model never borrows an older one's price. Cost comes from a billed amount (Cursor CSV) first, then the table, then a cost the source reported (OpenCode, Copilot CLI, Claude Code OTel). Unknown models make costs `n/a` and are listed so the user can pass `--prices`.
 
 ## JSON report
 
 `turnroi analyze --json` emits a versioned document (`schemaVersion`, currently 2). It has session metadata, usage, total cost, `notes`, and `turns[]` (usage, cost, tools, `outcome`, `evidence`). It also has `outcomes[]` (per-outcome turns/cost/tokens) and `findings[]`. Breaking changes bump `schemaVersion`.
 
+## MCP server
+
+`turnroi mcp` speaks the Model Context Protocol over stdio (newline-delimited JSON-RPC 2.0: `initialize`, `ping`, `tools/list`, `tools/call`). Its tools are read-only and run the matching CLI command with output captured:
+
+| Tool | Runs |
+|---|---|
+| `list_sessions` | `sessions` |
+| `analyze_session` | `analyze` (default `latest`, so an agent can review its own session; `json: true` returns schema v2) |
+| `waste_profile` | `profile` (never `--apply`) |
+| `guardrail_savings` | `savings` |
+| `check_skill_freshness` | `profile --check` |
+
+A failing command returns `isError: true` with its message; a malformed request gets a JSON-RPC error, and the server keeps running.
+
+## Benchmark
+
+`turnroi bench suite.json` answers "does this variant cost less at the same success rate?". For each run (`runs` × task × variant, variants interleaved so drift hits all of them), it copies the repo to a temp folder (skipping `bin`, `obj`, `node_modules`, …), runs the variant's setup commands, runs the agent command (`{prompt}` is replaced with the shell-quoted prompt, also in `$TURNROI_PROMPT`), then the task's verify command (exit 0 = success). The run's session is found among the source's sessions modified since the run started whose `cwd` ends with the copy's unique folder name, and analyzed for tokens and cost. The summary reports success, cost, cost per success, and cost on the (task, run) pairs every variant solved, which is the fair comparison. See [BENCHMARK.md](BENCHMARK.md).
+
+## Team rollup
+
+`turnroi export` writes a `TeamExport` (schema 1): per session, a hashed id, source, project (folder name, or its hash with `--hash-projects`), start time, turns, calls, models, token totals, cost, cost and turns per outcome, and finding counts and tokens per kind. No prompts, paths, commands or code. `turnroi team <folder>` merges exports (one per person; the same session exported twice counts once) and reports by person and by project.
+
+## Labels and evaluation
+
+`turnroi label` walks a session's turns and records your verdict (or `--set 3=wasted`) in `labels.jsonl` in the data folder, with where the session lives and what TurnROI predicted. `turnroi eval` re-analyzes each labelled session with the current detector (falling back to the saved prediction if it's gone) and prints accuracy, per-outcome precision, recall and F1, and a confusion matrix. It's how changes to pushback and outcome rules are checked.
+
 ## Known limits
 
-- Outcome signals are heuristics. A reverted change can still have been useful exploration, and pushback detection reads only the start of the next prompt.
-- Copilot doesn't record tool output sizes. Older Copilot records hold only the last call's tokens.
-- Cursor has no prompts or tools in its export. Joining it with local `state.vscdb` prompts needs SQLite, which is not yet included.
-- Not yet supported: Copilot CLI sessions as an analysis source, OpenCode, OpenTelemetry GenAI exports, an MCP server.
-- Cursor's usage export has no tool calls, so rules and skills for Cursor have to be learned from another agent's history (`--source … --agent cursor`).
-- Hook payload details for Cursor and Copilot are based on their published docs; field names are read tolerantly and anything unrecognized fails open.
+- Outcome signals are heuristics. A reverted change can still have been useful exploration; pushback detection reads only the opening of the next prompt.
+- Copilot (VS Code) doesn't record tool output sizes. Older Copilot records hold only the last call's tokens. Copilot CLI without per-call usage spreads session totals.
+- Cursor's local chats usually lack tokens; add `--usage` for spend. Joining by time can mix chats that ran at the same moment.
+- Hook payloads for Cursor and Copilot follow their published docs; fields are read tolerantly and anything unrecognized fails open.
+- Benchmarks of real agents are noisy and cost money: use several tasks and runs.

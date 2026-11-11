@@ -62,11 +62,6 @@ public sealed class AnalyzerOptions
 /// </summary>
 public sealed class SessionAnalyzer
 {
-    // Matches the start of a human reply that pushes back on the previous turn.
-    private static readonly Regex CorrectionPattern = new(
-        @"^\s*(\[Request interrupted by user|no\b|nope\b|wrong\b|incorrect\b|revert\b|undo\b|stop\b|that'?s (not|wrong)|this is (not|wrong)|that (didn'?t|did not|doesn'?t) work|(it'?s |it is )?still (not|broken|failing|wrong)|you (broke|missed|forgot)|why did you)",
-        RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
     private readonly PriceTable _prices;
     private readonly AnalyzerOptions _options;
     private readonly IGitHistory? _git;
@@ -79,7 +74,7 @@ public sealed class SessionAnalyzer
         _git = git;
     }
 
-    public static bool IsCorrection(string prompt) => CorrectionPattern.IsMatch(prompt);
+    public static bool IsCorrection(string prompt, bool previousTurnChangedCode = false) => Pushback.Detect(prompt, previousTurnChangedCode) is not null;
 
     public SessionReport Analyze(AgentSession session)
     {
@@ -177,8 +172,8 @@ public sealed class SessionAnalyzer
         for (var i = 0; i < session.Turns.Count - 1; i++)
         {
             var next = session.Turns[i + 1];
-            if (!IsCorrection(next.Prompt)) continue;
             var turn = session.Turns[i];
+            if (Pushback.Detect(next.Prompt, turn.Tools.Any(ToolKinds.IsEdit)) is null) continue;
             perTurn[turn.Index].Add(new Finding(
                 FindingKind.CorrectedNextTurn, Severity.High, turn.Index,
                 $"Next prompt pushed back: \"{Truncate(OneLine(next.Prompt), 50)}\"",

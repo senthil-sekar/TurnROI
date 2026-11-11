@@ -20,9 +20,18 @@ internal sealed class CliArgs
     public bool LimitSet { get; private set; }
     public string? ProjectDir { get; private set; }
     public List<Core.Apply.TargetAgent> Agents { get; } = new();
+    public List<string> Variants { get; } = new();
+    public string? Person { get; private set; }
+    public bool HashProjects { get; private set; }
+    public string? SetLabels { get; private set; }
+    public string? LabelsFile { get; private set; }
     public bool Apply { get; private set; }
     public bool Undo { get; private set; }
     public bool Yes { get; private set; }
+    public bool Check { get; private set; }
+    public string? UsageCsv { get; private set; }
+    public string? HtmlPath { get; private set; }
+    public bool Refresh { get; private set; }
     public int Top { get; private set; } = 15;
     public int Limit { get; private set; } = 20;
     public string? Error { get; private set; }
@@ -38,23 +47,37 @@ internal sealed class CliArgs
           turnroi sessions                                   List recent sessions
           turnroi profile                                    Waste patterns across sessions + proposed fixes
           turnroi compare --split <date>                     Before/after a change (e.g. installing the hooks)
+          turnroi savings                                    What the guardrails blocked and nudged, tokens avoided
+          turnroi bench <suite.json> [--variant a,b] [--runs n]  Same tasks with and without TurnROI: cost at equal success
+
+        Team and accuracy
+          turnroi export [--as <name>] [--write f.json]      Share your numbers (no prompts, code or paths)
+          turnroi team <folder | file.json>                  Roll up everyone's exports: by person and by project
+          turnroi label [session] [--set 3=wasted,4=p]       Label turns yourself (asks turn by turn)
+          turnroi eval                                       How TurnROI's outcomes match your labels
 
         Fix
           turnroi profile --apply --agent <a>                Write rules, a repo skill, guardrail settings and hooks
                                                              for claude, cursor, copilot or all (previews, then asks)
           turnroi profile --undo                             Revert the last change TurnROI wrote
+          turnroi profile --check | --refresh                Are the skill's file outlines stale? (exit 1) / update them
           turnroi hooks install|uninstall|print --agent <a>  Guardrail hooks only
-          turnroi hook pre-tool-use|post-tool-use            Called by the agent; reads the event on stdin
+          turnroi hook pre-tool-use|post-tool-use|user-prompt  Called by the agent; reads the event on stdin
+          turnroi mcp                                        MCP server (stdio): agents query their own spend and waste
 
         Options
-          --source <s>      Sessions to read: claude (default), copilot, codex or cursor. Files are auto-detected.
+          --source <s>      Sessions to read: claude (default), copilot, copilot-cli, codex, cursor, opencode, otel.
+                            Files (transcripts, Cursor's state.vscdb or usage CSV, OTLP JSON) are auto-detected.
+          --usage <csv>     cursor: add billed cost from the Cursor dashboard usage export
+          --html <file>     analyze/profile/savings/team: also write a self-contained HTML report
+          --hash-projects   export: replace folder names with hashes
           --agent <a>       Agent(s) to write for: claude, cursor, copilot, all (comma-separated works too)
           --dir <path>      Project folder to write into (default: current folder)
           --yes             Write without asking
           --project <text>  profile/compare: only sessions whose folder contains <text>
           --since <date>    profile/compare: only sessions started on or after <date>
           --limit <n>       How many recent sessions to read (sessions: 20, profile/compare: 100)
-          --write <file>    profile: also write the profile and proposals as Markdown
+          --write <file>    profile: also write the profile and proposals as Markdown; bench: the runs as JSON
           --json            analyze: machine-readable report
           --top <n> | --all analyze: most expensive n turns (default 15), or every turn in order
           --prices <file>   Override the built-in price table
@@ -98,6 +121,10 @@ internal sealed class CliArgs
                 case "--dir": a.ProjectDir = Value(ref i); break;
                 case "--apply": a.Apply = true; break;
                 case "--undo": a.Undo = true; break;
+                case "--check": a.Check = true; break;
+                case "--usage": a.UsageCsv = Value(ref i); break;
+                case "--html": a.HtmlPath = Value(ref i); break;
+                case "--refresh": a.Refresh = true; break;
                 case "--yes" or "-y": a.Yes = true; break;
                 case "--agent":
                     var agentText = Value(ref i);
@@ -109,13 +136,21 @@ internal sealed class CliArgs
                         else { a.Error = $"unknown agent '{part}' (expected claude, cursor, copilot or all)"; break; }
                     }
                     break;
+                case "--variant":
+                    if (Value(ref i) is { } vs) a.Variants.AddRange(vs.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                    break;
+                case "--as": a.Person = Value(ref i); break;
+                case "--hash-projects": a.HashProjects = true; break;
+                case "--set": a.SetLabels = Value(ref i); break;
+                case "--labels": a.LabelsFile = Value(ref i); break;
+                case "--runs": a.Limit = Int(ref i); a.LimitSet = true; break;
                 case "--help" or "-h": a.Command = "help"; return a;
                 case "--root": a.Root = Value(ref i); break;
                 case "--source":
                     var src = Value(ref i);
                     if (src is null) break;
-                    if (Enum.TryParse<Core.Adapters.AgentSource>(src, ignoreCase: true, out var parsed)) a.Source = parsed;
-                    else a.Error = $"unknown source '{src}' (expected claude, copilot, codex or cursor)";
+                    if (Core.Adapters.SessionSources.Parse(src) is { } parsed) a.Source = parsed;
+                    else a.Error = $"unknown source '{src}' (expected claude, copilot, copilot-cli, codex, cursor, opencode or otel)";
                     break;
                 case "--prices": a.PricesFile = Value(ref i); break;
                 case "--top": a.Top = Int(ref i); break;
